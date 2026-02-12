@@ -1,0 +1,174 @@
+#!/bin/bash
+
+# 配置正确的真实ptxas和插桩脚本路径
+HOOK_ENABLE=${OMINISCOPE_ENABLE:-false}
+REAL_PTXAS="/home/junshan/cuda-13.1/bin/ptxas.real"
+INSTRUMENT_SCRIPT=/home/junshan/cuTile/python/ominiscope/insert_ptx.py
+INSTRUMENT_CONFIG=/home/junshan/cuTile/config_automated.ini
+LOG_FILE="/home/junshan/cuTile/ptxas_hook_detailed.log"
+ENABLE_DEBUG=true
+
+# 如果拦截被禁用，直接调用真实ptxas并退出
+if [ "$HOOK_ENABLE" != "true" ] && [ "$HOOK_ENABLE" != "1" ]; then
+    exec "$REAL_PTXAS" "$@"
+fi
+
+# 日志函数
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S.%3N')
+  
+    # 不同的日志级别
+    case "$level" in
+        "DEBUG")
+            if [ "$ENABLE_DEBUG" = true ]; then
+                echo "[$timestamp] [DEBUG] $$ - $message" >> "$LOG_FILE"
+            fi
+            ;;
+        "INFO")
+            echo "[$timestamp] [INFO] $$ - $message" >> "$LOG_FILE"
+            ;;
+        "WARN")
+            echo "[$timestamp] [WARN] $$ - $message" >> "$LOG_FILE"
+            ;;
+        "ERROR")
+            echo "[$timestamp] [ERROR] $$ - $message" >> "$LOG_FILE"
+            echo "[$timestamp] [ERROR] $$ - $message" >&2  # 同时输出到 stderr
+            ;;
+        *)
+            echo "[$timestamp] [INFO] $$ - $message" >> "$LOG_FILE"
+            ;;
+    esac
+}
+
+# 记录开始
+log "INFO" "ptxas 被调用: 完整参数: $*"
+log "DEBUG" "当前工作目录: $(pwd)"
+log "DEBUG" "用户: $(whoami)"
+log "DEBUG" "环境变量 CUDA_PATH: $CUDA_PATH"
+
+# 参数解析
+INPUT_PTX=""
+OUTPUT_BIN=""
+ARCH=""
+OPT_LEVEL=""
+EXTENDED_SMEM=""
+NV_HOST_FILE=""
+UUMN_FLAG=false
+
+# 参数数组（用于传递给真实 ptxas）
+ARGS=()
+
+# 解析每个参数
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -arch)
+            ARCH="$2"
+            ARGS+=("-arch" "$ARCH")
+            shift 2
+            ;;
+        -o)
+            OUTPUT_BIN="$2"
+            ARGS+=("-o" "$OUTPUT_BIN")
+            shift 2
+            ;;
+        --opt-level)
+            OPT_LEVEL="$2"
+            ARGS+=("--opt-level" "$OPT_LEVEL")
+            shift 2
+            ;;
+        --enable-extended-smem=*)
+            EXTENDED_SMEM="${1#*=}"
+            ARGS+=("$1")
+            shift
+            ;;
+        --nv-host=*)
+            NV_HOST_FILE="${1#*=}"
+            ARGS+=("$1")
+            shift
+            ;;
+        -uumn)
+            UUMN_FLAG=true
+            ARGS+=("$1")
+            shift
+            ;;
+        *.ptx)
+            INPUT_PTX="$1"
+            ARGS+=("$1")
+            shift
+            ;;
+        *)
+            # 未知参数，直接传递
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+log "INFO" " 解析结果:"
+log "INFO" " 输入PTX: $INPUT_PTX"
+log "INFO" " 输出BIN: $OUTPUT_BIN"
+log "INFO" " 架构: $ARCH"
+log "INFO" " 优化级别: $OPT_LEVEL"
+log "INFO" " 扩展共享内存: $EXTENDED_SMEM"
+log "INFO" " NV_HOST文件: $NV_HOST_FILE"
+log "INFO" " UUMN标志: $UUMN_FLAG"
+
+# 检查文件是否存在
+if [[ ! -f "$INPUT_PTX" ]]; then
+    log "ERROR" " 输入PTX文件不存在: $INPUT_PTX"
+    exit 1
+fi
+
+log "INFO" " 开始PTX插桩流程"
+log "INFO" " 调用插桩脚本: $INSTRUMENT_SCRIPT"
+START_TIME=$(date +%s.%3N)
+
+# 调用插桩脚本
+if python3 "$INSTRUMENT_SCRIPT" "$INPUT_PTX" --config "$INSTRUMENT_CONFIG" 2>&1 | tee -a "$LOG_FILE"; then
+    END_TIME=$(date +%s.%3N)
+    DURATION=$(echo "$END_TIME - $START_TIME" | bc)
+    log "INFO" " 插桩脚本执行完成，耗时: ${DURATION}秒"
+else
+    log "ERROR" " 插桩脚本执行失败"
+fi
+
+# 调用真实ptxas
+log "INFO" " 调用 ptxas: $REAL_PTXAS"
+log "DEBUG" " 完整参数: ${ARGS[@]}"
+
+# 记录真实ptxas的版本信息（用于调试）
+if [ "$ENABLE_DEBUG" = true ]; then
+    "$REAL_PTXAS" --version 2>&1 | while read line; do
+        log "DEBUG" " ptxas版本: $line"
+    done
+fi
+
+# 执行真实ptxas，同时捕获输出
+START_TIME=$(date +%s.%3N)
+ERROR_OUTPUT=$("$REAL_PTXAS" "${ARGS[@]}" 2>&1)
+PTXAS_EXIT_CODE=$?
+END_TIME=$(date +%s.%3N)
+DURATION=$(echo "$END_TIME - $START_TIME" | bc)
+
+log "INFO" " ptxas 执行完成"
+log "INFO" " 执行时间： ${DURATION}秒"
+
+if [[ $PTXAS_EXIT_CODE -eq 0 ]]; then
+    log "INFO" " ptxas 编译成功"
+    if [[ -f "$OUTPUT_BIN" ]]; then
+        BIN_SIZE=$(wc -c < "$OUTPUT_BIN")
+        log "INFO" "输出BIN文件大小： $BIN_SIZE 字节"
+    fi
+else
+    log "ERROR" " ptxas 编译失败："
+    log "ERROR" " ptxas 输出："
+    echo "$ERROR_OUTPUT" | while IFS= read -r line; do
+        log "ERROR" "  $line"
+    done
+fi
+
+log "INFO" " ptxas wrapper执行完毕"
+exit $PTXAS_EXIT_CODE

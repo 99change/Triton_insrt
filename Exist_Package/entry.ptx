@@ -1,0 +1,6 @@
+// ---- Timer Start ----
+    @!%is_probed_thread bra $JUMP_START_INDEX_PROBE;
+    mov.u64 %start_idx, INDEX;
+    mov.u64 %start_time, %clock64;
+$JUMP_START_INDEX_PROBE:
+// ---- Timer Start ----

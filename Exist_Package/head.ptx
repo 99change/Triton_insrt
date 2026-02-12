@@ -1,0 +1,86 @@
+// ---- Probe Preparation ----
+    // Register declaration
+    .reg .u64 %start_time, %end_time;
+    .reg .u64 %start_idx, %end_idx;
+
+    .reg .u32 %tid_x, %tid_y, %tid_z;
+    .reg .u32 %bid_x, %bid_y, %bid_z;
+    .reg .u32 %bdim_x, %bdim_y, %bdim_z;
+    .reg .u32 %gdim_x, %gdim_y, %gdim_z;
+
+    .reg .u64 %bdim_xyz;
+    .reg .u64 %bid_linear, %tid_linear, %global_tid, %buffer_tid;
+
+    .reg .u64 %addr_start, %addr_start_idx, %addr_end, %addr_end_idx;
+    .reg .u64 %buffer_base, %slot_start, %slot_end;
+    .reg .u64 %n_thread, %thread_cell, %offset;
+    .reg .u64 %tmp<3>;
+    .reg .pred %is_probed_thread, %tmp_pred1, %tmp_pred2;
+
+    // Register load
+    mov.u32 %tid_x, %tid.x;
+    mov.u32 %tid_y, %tid.y;
+    mov.u32 %tid_z, %tid.z;
+
+    mov.u32 %bid_x, %ctaid.x;
+    mov.u32 %bid_y, %ctaid.y;
+    mov.u32 %bid_z, %ctaid.z;
+
+    mov.u32 %bdim_x, %ntid.x;
+    mov.u32 %bdim_y, %ntid.y;
+    mov.u32 %bdim_z, %ntid.z;
+
+    mov.u32 %gdim_x, %nctaid.x;
+    mov.u32 %gdim_y, %nctaid.y;
+    mov.u32 %gdim_z, %nctaid.z;
+
+    // Important register initialization
+    mov.u64 %slot_start, 0;
+    mov.u64 %slot_end, 0;
+    mov.u64 %start_time, 0;
+    mov.u64 %end_time, 0;
+
+    // Load parameters
+    ld.param.u64 %buffer_base, [KERNEL_NAME_param_PARAM];
+
+    // NOTE: Compute the entire block size using x, y, and z dimensions since y and
+    // z may be larger than 1.
+    mul.wide.u32 %bdim_xyz, %bdim_y, %bdim_x;
+    cvt.u64.u32 %tmp0, %bdim_z;
+    mul.lo.u64 %bdim_xyz, %bdim_xyz, %tmp0;
+
+    // Flatten the block index:
+    //   bid_linear = ((bid_z * gdim_y + bid_y) * gdim_x + bid_x)
+    mul.wide.u32 %tmp0, %bid_z, %gdim_y;  // bid_z * gdim_y
+    cvt.u64.u32 %tmp2, %bid_y;
+    add.u64 %tmp0, %tmp0, %tmp2;          // + bid_y
+    cvt.u64.u32 %tmp1, %gdim_x;
+    mul.lo.u64 %tmp1, %tmp0, %tmp1;       // * gdim_x
+    cvt.u64.u32 %tmp2, %bid_x;
+    add.u64 %bid_linear, %tmp1, %tmp2;    // + bid_x
+
+    // Flatten the thread index:
+    //   tid_linear = ((tid_z * bdim_y + tid_y) * bdim_x + tid_x)
+    mul.wide.u32 %tmp0, %tid_z, %bdim_y;  // tid_z * bdim_y
+    cvt.u64.u32 %tmp2, %tid_y;
+    add.u64 %tmp0, %tmp0, %tmp2;          // + tid_y
+    cvt.u64.u32 %tmp1, %bdim_x;
+    mul.lo.u64 %tmp1, %tmp0, %tmp1;       // * bdim_x
+    cvt.u64.u32 %tmp2, %tid_x;
+    add.u64 %tid_linear, %tmp1, %tmp2;    // + tid_x
+
+    // Flatten the global thread index:
+    //   global_tid = bid_linear * (bdim_x * bdim_y * bdim_z) + tid_linear
+    mul.lo.u64 %global_tid, %bid_linear, %bdim_xyz;
+    add.u64 %global_tid, %global_tid, %tid_linear;
+    sub.u64 %buffer_tid, %global_tid, START;
+
+    // Get total number of probed threads:
+    //   n_thread = START - END + 1
+    mov.u64 %n_thread, TOTAL;
+
+    // Check whether this thread need to be probed
+    setp.ge.u64 %tmp_pred1, %global_tid, START;
+    setp.le.u64 %tmp_pred2, %global_tid, END;
+    and.pred %is_probed_thread, %tmp_pred1, %tmp_pred2;
+// ---- Probe Preparation ----
