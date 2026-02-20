@@ -1,227 +1,155 @@
-"""
-Triton Matrix Multiplication
-=============================
-Based on the official Triton tutorial:
-https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html
-
-Computes C = A @ B where A is (M, K) and B is (K, N).
-Uses block-level tiling with L2 cache optimization via "grouped ordering".
-"""
-
 import torch
-import triton
-import triton.language as tl
+import sys
+import configparser
+from math import ceil
+import cuda.tile as ct
+import matplotlib.pyplot as plt
+import numpy as np
+torch.set_default_device(7)
+ConstInt = ct.Constant[int]
 
+def swizzle_2d(M, N, TILE_SIZE_M, TILE_SIZE_N, GROUP_SIZE_M):
+    # Get the global IDs of the current CUDA block (CTA) in a 1D grid.
+    bid = ct.bid(0)
+    num_bid_m = ct.cdiv(M, TILE_SIZE_M)
+    num_bid_n = ct.cdiv(N, TILE_SIZE_N)
+    num_bid_in_group = GROUP_SIZE_M * num_bid_n
+    group_id = bid // num_bid_in_group
+    first_bid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_bid_m - first_bid_m, GROUP_SIZE_M)
+    bid_m = first_bid_m + (bid % group_size_m)
+    bid_n = (bid % num_bid_in_group) // group_size_m
+    return bid_m, bid_n
 
-@triton.jit
+@ct.kernel(num_ctas=1, occupancy=2)
 def matmul_kernel(
-    # Pointers to matrices
-    a_ptr, b_ptr, c_ptr,
-    # Matrix dimensions
-    M, N, K,
-    # Strides (number of elements to skip to move by 1 in that dimension)
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
-    # Meta-parameters
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    ACTIVATION: tl.constexpr,
+    A,
+    B,
+    C,
+    TILE_SIZE_M: ConstInt,
+    TILE_SIZE_N: ConstInt,
+    TILE_SIZE_K: ConstInt,
+    time_buffer,
+    idx_buffer
 ):
-    """Kernel for computing the matmul C = A x B.
+    GROUP_SIZE_M = 8
+    M = A.shape[0]
+    N = B.shape[1]
+    bidx, bidy = swizzle_2d(M, N, TILE_SIZE_M, TILE_SIZE_N, GROUP_SIZE_M)
+    num_tiles_k = ct.num_tiles(A, axis=1, shape=(TILE_SIZE_M, TILE_SIZE_K))
 
-    A has shape (M, K), B has shape (K, N) and C has shape (M, N).
-    """
-    # -----------------------------------------------------------
-    # Map program ids `pid` to the block of C it should compute.
-    # This is done in a grouped ordering to promote L2 data reuse.
-    # See above `L2 Cache Optimizations` section for details.
-    pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    accumulator = ct.full((TILE_SIZE_M, TILE_SIZE_N), 0, dtype=ct.float32)
+    zero_pad = ct.PaddingMode.ZERO
 
-    # -----------------------------------------------------------
-    # Create pointers for the first blocks of A and B.
-    # We will advance this pointer as we move in the K direction
-    # and accumulate.
-    # `a_ptrs` is a block of [BLOCK_SIZE_M, BLOCK_SIZE_K] pointers
-    # `b_ptrs` is a block of [BLOCK_SIZE_K, BLOCK_SIZE_N] pointers
-    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    offs_k = tl.arange(0, BLOCK_SIZE_K)
-    a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
-    b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    dtype = ct.tfloat32 if A.dtype == ct.float32 else A.dtype
 
-    # -----------------------------------------------------------
-    # Iterate to compute a block of the C matrix.
-    # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block
-    # of fp32 values for higher accuracy.
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        # Load the next block of A and B, generate a mask by checking
-        # the K dimension. If it is out of bounds, set it to 0.
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        # We accumulate along the K dimension.
-        accumulator = tl.dot(a, b, accumulator)
-        # Advance the ptrs to the next K block.
-        a_ptrs += BLOCK_SIZE_K * stride_ak
-        b_ptrs += BLOCK_SIZE_K * stride_bk
+    for k in range(num_tiles_k):
+        a = ct.load(A, index=(bidx, k), shape=(TILE_SIZE_M, TILE_SIZE_K), padding_mode=zero_pad).astype(dtype)
+        b = ct.load(B, index=(k, bidy), shape=(TILE_SIZE_K, TILE_SIZE_N), padding_mode=zero_pad).astype(dtype)
+        accumulator = ct.mma(a, b, accumulator)
 
-    # Optional fused activation
-    if ACTIVATION == "leaky_relu":
-        accumulator = leaky_relu(accumulator)
+    accumulator = ct.astype(accumulator, C.dtype)
+    ct.store(C, index=(bidx, bidy), tile=accumulator)
 
-    c = accumulator.to(tl.float16)
+NUM_THREAD = 128
+BUFFER_LENGTH = 330000
+M = 8192
+N = 16384
+K = 53428
+TM = 128
+TN = 64
+TK = 32
 
-    # -----------------------------------------------------------
-    # Write back the block of the output matrix C with masks.
-    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
-    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
-    tl.store(c_ptrs, c, mask=c_mask)
+def simple_cutile_matmul(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    export_path_raw: str,
+    export_path_duration: str,
+    time_buffer: torch.Tensor | None = None,
+    idx_buffer: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if A.shape[1] != B.shape[0]:
+        raise ValueError("K dimension mismatch")
+    if not (A.is_cuda and B.is_cuda):
+        raise ValueError("Inputs must be CUDA tensors")
+    if A.device != B.device:
+        raise ValueError("Inputs must be on the same device")
 
+    m, _ = A.shape
+    _, n = B.shape
+    grid = (ceil(m / TM) * ceil(n / TN), 1, 1)
 
-@triton.jit
-def leaky_relu(x):
-    return tl.where(x >= 0, x, 0.01 * x)
+    C = torch.empty((m, n), device=A.device, dtype=A.dtype)
 
+    ct.launch(torch.cuda.current_stream(), grid, matmul_kernel, (A, B, C, TM, TN, TK, time_buffer, idx_buffer))
 
-def matmul(a, b, activation=""):
-    """Triton matrix multiplication wrapper.
+    torch.cuda.synchronize()
+    
+    idx_buffer_cpu = idx_buffer.cpu().numpy()
+    time_buffer_cpu = time_buffer.cpu().numpy()
 
-    Args:
-        a: (M, K) input tensor, float16
-        b: (K, N) input tensor, float16
-        activation: optional fused activation ("leaky_relu" or "")
+    # 合并 idx 和 time 数据到一个 buffer
+    rows = len(idx_buffer_cpu) // (NUM_THREAD * 2)
+    idx_buffer_2d = idx_buffer_cpu.reshape(rows, NUM_THREAD * 2)
+    time_buffer_2d = time_buffer_cpu.reshape(rows, NUM_THREAD * 2)
+    
+    # 组合成原始格式：每个线程 4 个值 [start_idx, end_idx, start_time, end_time]
+    buffer_list_raw = []
+    for row_idx in range(rows):
+        row_data = []
+        for thread_idx in range(NUM_THREAD):
+            start_idx = idx_buffer_2d[row_idx, thread_idx * 2]
+            end_idx = idx_buffer_2d[row_idx, thread_idx * 2 + 1]
+            start_time = time_buffer_2d[row_idx, thread_idx * 2]
+            end_time = time_buffer_2d[row_idx, thread_idx * 2 + 1]
+            row_data.extend([start_idx, end_idx, start_time, end_time])
+        buffer_list_raw.append(row_data)
+    
+    buffer_2d_raw = np.array(buffer_list_raw)
+    export_path_raw_npy = export_path_raw + ".npy"
+    np.save(export_path_raw_npy, buffer_2d_raw)
+    export_path_raw = export_path_raw + ".csv"
+    np.savetxt(export_path_raw, buffer_2d_raw, delimiter=',', fmt='%d')
+    print(f"已保存原始数据")
 
-    Returns:
-        c: (M, N) output tensor, float16
-    """
-    # Check constraints
-    assert a.shape[1] == b.shape[0], "Incompatible dimensions"
-    assert a.is_contiguous(), "Matrix A must be contiguous"
-    assert b.is_contiguous(), "Matrix B must be contiguous"
+    # 计算计时数据
+    duration_list = []
+    for row in buffer_2d_raw:
+        row_duration = []
+        for i in range(NUM_THREAD):
+            start_idx = row[i * 4 + 0]
+            end_idx = row[i * 4 + 1]
+            start_time = row[i * 4 + 2]
+            end_time = row[i * 4 + 3]
+            block_duration = end_time - start_time
+            row_duration.extend([start_idx, end_idx, block_duration])
+        duration_list.append(row_duration)
+    
+    duration_2d = np.array(duration_list)
+    print(f"第一个线程的总周期数: {np.sum(duration_2d[:, 2])}")
+    export_path_duration_npy = export_path_duration + ".npy"
+    np.save(export_path_duration_npy, duration_2d)
+    export_path_duration = export_path_duration + ".csv"
+    np.savetxt(export_path_duration, duration_2d, delimiter=',', fmt='%d')
+    print(f"已保存计时数据")
 
-    M, K = a.shape
-    K, N = b.shape
-
-    # Allocate output
-    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
-
-    # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
-
-    matmul_kernel[grid](
-        a, b, c,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
-        BLOCK_SIZE_M=128,
-        BLOCK_SIZE_N=256,
-        BLOCK_SIZE_K=64,
-        GROUP_SIZE_M=8,
-        ACTIVATION=activation,
-    )
-    return c
-
-
-# ---------------------------------------------------------------------------
-# Test & Benchmark
-# ---------------------------------------------------------------------------
-
-def test_matmul():
-    """Correctness test: compare Triton matmul vs torch.matmul."""
-    torch.manual_seed(0)
-    a = torch.randn((512, 512), device="cuda", dtype=torch.float16)
-    b = torch.randn((512, 512), device="cuda", dtype=torch.float16)
-
-    triton_output = matmul(a, b)
-    torch_output = torch.matmul(a, b)
-
-    # Use rtol=0 so we only check absolute tolerance
-    # FP16 matmul can have noticeable numerical differences
-    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
-        print(f"✅ Triton matmul matches torch.matmul (max diff = "
-              f"{(triton_output - torch_output).abs().max().item():.6f})")
-    else:
-        print(f"❌ Mismatch! max diff = "
-              f"{(triton_output - torch_output).abs().max().item():.6f}")
-
-    # Also test with activation
-    triton_act = matmul(a, b, activation="leaky_relu")
-    torch_act = torch.matmul(a, b)
-    torch_act = torch.where(torch_act >= 0, torch_act, 0.01 * torch_act)
-    if torch.allclose(triton_act, torch_act, atol=1e-2, rtol=0):
-        print(f"✅ Triton matmul+leaky_relu matches (max diff = "
-              f"{(triton_act - torch_act).abs().max().item():.6f})")
-    else:
-        print(f"❌ Mismatch with activation! max diff = "
-              f"{(triton_act - torch_act).abs().max().item():.6f}")
-
-
-@triton.testing.perf_report(
-    triton.testing.Benchmark(
-        x_names=["M", "N", "K"],  # Argument names to use as x-axis
-        x_vals=[128 * i for i in range(2, 33)],  # Different sizes
-        line_arg="provider",
-        line_vals=["cublas", "triton"],
-        line_names=["cuBLAS", "Triton"],
-        styles=[("green", "-"), ("blue", "-")],
-        ylabel="TFLOPS",
-        plot_name="matmul-performance",
-        args={},
-    )
-)
-def benchmark(M, N, K, provider):
-    a = torch.randn((M, K), device="cuda", dtype=torch.float16)
-    b = torch.randn((K, N), device="cuda", dtype=torch.float16)
-    quantiles = [0.5, 0.2, 0.8]
-    if provider == "cublas":
-        ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: torch.matmul(a, b), quantiles=quantiles
-        )
-    if provider == "triton":
-        ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: matmul(a, b), quantiles=quantiles
-        )
-    perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
-    return perf(ms), perf(max_ms), perf(min_ms)
-
+    return C
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Triton Matrix Multiplication - Correctness Test")
-    print("=" * 60)
-    test_matmul()
+    dtype = torch.float16
 
-    print()
-    print("=" * 60)
-    print("Triton Matrix Multiplication - Benchmark")
-    print("=" * 60)
-    try:
-        benchmark.run(show_plots=False, print_data=True)
-    except ImportError:
-        print("(matplotlib not installed, running manual benchmark instead)")
-        # Quick manual benchmark at a few sizes
-        for size in [512, 1024, 2048]:
-            a = torch.randn((size, size), device="cuda", dtype=torch.float16)
-            b = torch.randn((size, size), device="cuda", dtype=torch.float16)
+    config_path = "/home/junshan/cuTile/config.ini"
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    t_start = int(config['ominiscope']['t_start'])
+    t_end = int(config['ominiscope']['t_end'])
 
-            cublas_ms = triton.testing.do_bench(lambda: torch.matmul(a, b))
-            triton_ms = triton.testing.do_bench(lambda: matmul(a, b))
-            tflops = lambda ms: 2 * size**3 * 1e-12 / (ms * 1e-3)
-            print(f"  [{size:4d}x{size:4d}]  cuBLAS: {tflops(cublas_ms):6.1f} TFLOPS ({cublas_ms:.3f} ms)"
-                  f"  |  Triton: {tflops(triton_ms):6.1f} TFLOPS ({triton_ms:.3f} ms)")
+    A = torch.randn(M, K, dtype=dtype, device="cuda")
+    B = torch.randn(K, N, dtype=dtype, device="cuda")
+    time_buffer = torch.zeros(NUM_THREAD * BUFFER_LENGTH * 2, dtype=torch.int64, device="cuda")
+    idx_buffer = torch.zeros(NUM_THREAD * BUFFER_LENGTH * 2, dtype=torch.int16, device="cuda")
+    export_path_raw = config['output']['raw_base'] + f"_{t_start}-{t_end}"
+    export_path_duration = config['output']['duration_base'] + f"_{t_start}-{t_end}"
+
+    C = simple_cutile_matmul(A, B, time_buffer=time_buffer, idx_buffer=idx_buffer, export_path_raw=export_path_raw, export_path_duration=export_path_duration)
+    print(f"C shape={C.shape}, dtype={C.dtype}, M={M}, N={N}, K={K}, dtype={dtype}")

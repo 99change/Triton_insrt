@@ -7,10 +7,14 @@ End-to-end test: Triton matmul with PTX instrumentation
 """
 
 import os
+import sys
 import torch
 import triton
 import triton.language as tl
-from triton_instrument import TritonInstrument
+
+# Add project root so `tri_ins` is importable
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from tri_ins import TritonInstrument
 
 
 @triton.jit
@@ -21,8 +25,9 @@ def matmul_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    # === Instrumentation buffer (last non-constexpr param) ===
-    buffer_ptr,
+    # === Instrumentation buffers (last two non-constexpr params) ===
+    time_buffer_ptr,
+    idx_buffer_ptr,
     # Constexpr params (not in PTX)
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -83,13 +88,15 @@ def main():
 
     # Run uninstrumented kernel to get reference output
     c_ref = torch.empty((M, N), device="cuda", dtype=torch.float16)
+    _dummy = torch.zeros(1, dtype=torch.int64, device="cuda")
     matmul_kernel[grid](
         a, b, c_ref,
         M, N, K,
         a.stride(0), a.stride(1),
         b.stride(0), b.stride(1),
         c_ref.stride(0), c_ref.stride(1),
-        torch.zeros(1, dtype=torch.int64, device="cuda"),  # dummy buffer
+        _dummy,  # dummy time_buffer
+        _dummy,  # dummy idx_buffer
         BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_N=BLOCK_N,
         BLOCK_SIZE_K=BLOCK_K, GROUP_SIZE_M=8,
     )
@@ -106,12 +113,15 @@ def main():
     device = torch.cuda.current_device()
     matmul_kernel.device_caches[device][0].clear()  # clear in-memory kernel cache
 
+    output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
+    os.makedirs(output_dir, exist_ok=True)
+
     # Probe the first block's threads: global_tid 0..127
     with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
-        inst._dump_ptx = "/home/zhaoling/WORKSPACE/Triton_insrt/instrumented.ptx"
+        inst._dump_ptx = os.path.join(output_dir, "instrumented.ptx")
 
-        # Allocate buffer (generous estimate: 128 probes, 128 threads)
-        buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+        # Allocate both buffers (generous estimate: 128 probes, 128 threads)
+        time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
 
         # Launch instrumented kernel
         c_inst = torch.empty((M, N), device="cuda", dtype=torch.float16)
@@ -121,7 +131,8 @@ def main():
             a.stride(0), a.stride(1),
             b.stride(0), b.stride(1),
             c_inst.stride(0), c_inst.stride(1),
-            buf,  # ← instrumentation buffer
+            time_buf,  # ← timing buffer (int64)
+            idx_buf,   # ← index buffer (int16)
             BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_N=BLOCK_N,
             BLOCK_SIZE_K=BLOCK_K, GROUP_SIZE_M=8,
         )

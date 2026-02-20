@@ -15,6 +15,7 @@ Key env vars:
 """
 
 import os
+import sys
 import torch
 import triton
 import triton.language as tl
@@ -91,9 +92,11 @@ def main():
     torch.cuda.synchronize()
 
     # --- Step 2: Extract PTX from the compiled kernel cache ---
-    # Access the compiled kernel from the cache
     device = torch.cuda.current_device()
     kernel_cache = matmul_kernel.device_caches[device][0]
+
+    output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
+    os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 70)
     print("Compiled kernels in cache:", len(kernel_cache))
@@ -106,7 +109,7 @@ def main():
             continue
 
         # Save PTX to file
-        ptx_path = "/home/zhaoling/WORKSPACE/Triton_insrt/matmul_kernel.ptx"
+        ptx_path = os.path.join(output_dir, "matmul_kernel.ptx")
         with open(ptx_path, "w") as f:
             f.write(ptx)
         print(f"PTX saved to: {ptx_path}")

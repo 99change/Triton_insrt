@@ -1,29 +1,18 @@
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u64 %end_idx, INDEX;
+    mov.u16 %end_idx, INDEX;
 
     @!%is_probed_thread bra $JUMP_END_INDEX_PROBE;
-    // Calculate location inside the buffer
-    mul.lo.u64 %tmp0, %slot_end, %n_thread;
-    mul.lo.u64 %tmp0, %tmp0, 4;
-    mul.lo.u64 %tmp1, %buffer_tid, 4;
-    add.u64 %offset, %tmp0, %tmp1;
-
-    // Calculate store address
-    mul.lo.u64 %offset, %offset, 8;
-    add.u64 %addr_start_idx, %buffer_base, %offset;
-    add.u64 %addr_end_idx, %addr_start_idx, 8;
-    add.u64 %addr_start, %addr_end_idx, 8;
-    add.u64 %addr_end, %addr_start, 8;
 
     // Store data
-    st.global.u64 [%addr_start_idx], %start_idx;
-    st.global.u64 [%addr_end_idx], %end_idx;
-    st.global.u64 [%addr_start], %start_time;
-    st.global.u64 [%addr_end], %end_time;
+    st.global.u16 [%idx_store_base], %start_idx;
+    st.global.u16 [%idx_store_base + 2], %end_idx;
+    st.global.u64 [%time_store_base], %start_time;
+    st.global.u64 [%time_store_base + 8], %end_time;
 
-    // Slot self increment
-    add.u64 %slot_end, %slot_end, 1;
+    // Store address self increment
+    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
+    add.u64 %time_store_base, %time_store_base, %time_store_increment;
 $JUMP_END_INDEX_PROBE:
 // ---- Timer Stop ----

@@ -1,3 +1,48 @@
+# Triton PTX Instrumentation (tri_ins)
+
+Port of the cuTile PTX timing-probe system to Triton. Intercepts PTX during
+Triton compilation, inserts entry/exit timing probes at sub-block boundaries,
+and collects per-thread cycle counts via a GPU buffer tensor.
+
+## Project Structure
+
+```
+Triton_insrt/
+├── tri_ins/                   # Core instrumentation package
+│   ├── __init__.py            #   Public API: TritonInstrument, instrument_ptx
+│   ├── ptx_parser.py          #   PTX → sub-block CFG parser (adapted from cuTile)
+│   └── triton_instrument.py   #   Hook + probe insertion + results collection
+├── Exist_Package/             # Original cuTile probe templates (DO NOT MODIFY)
+│   ├── head.ptx / entry.ptx / exit.ptx / config.ptx
+│   ├── sub_block.py / insert_ptx.py
+│   └── config.ini
+├── examples/                  # Runnable example scripts
+│   ├── test_instrument.py     #   E2E matmul + instrumentation test
+│   ├── dump_ptx.py            #   Dump & inspect PTX .loc directives
+│   └── matmul.py              #   Standalone Triton matmul benchmark
+├── output/                    # Generated PTX artifacts (gitignored)
+└── README.md
+```
+
+## Quick Start
+
+```python
+from tri_ins import TritonInstrument
+
+with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
+    buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+    my_kernel[grid](..., buf, ...)   # buffer_ptr = last non-constexpr param
+    torch.cuda.synchronize()
+    inst.print_summary()
+```
+
+```bash
+# Run the full E2E test
+cd examples && python test_instrument.py
+```
+
+---
+
 # Triton Hidden Kernel Parameters: Global Scratch & Profile Scratch
 
 ## Executive Summary

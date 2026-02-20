@@ -1,7 +1,7 @@
 // ---- Probe Preparation ----
     // Register declaration
     .reg .u64 %start_time, %end_time;
-    .reg .u64 %start_idx, %end_idx;
+    .reg .u16 %start_idx, %end_idx;
 
     .reg .u32 %tid_x, %tid_y, %tid_z;
     .reg .u32 %bid_x, %bid_y, %bid_z;
@@ -11,9 +11,9 @@
     .reg .u64 %bdim_xyz;
     .reg .u64 %bid_linear, %tid_linear, %global_tid, %buffer_tid;
 
-    .reg .u64 %addr_start, %addr_start_idx, %addr_end, %addr_end_idx;
-    .reg .u64 %buffer_base, %slot_start, %slot_end;
-    .reg .u64 %n_thread, %thread_cell, %offset;
+    .reg .u64 %time_buffer_base, %time_store_base, %time_store_increment;
+    .reg .u64 %idx_buffer_base, %idx_store_base, %idx_store_increment;
+    .reg .u64 %n_thread;
     .reg .u64 %tmp<3>;
     .reg .pred %is_probed_thread, %tmp_pred1, %tmp_pred2;
 
@@ -34,14 +34,9 @@
     mov.u32 %gdim_y, %nctaid.y;
     mov.u32 %gdim_z, %nctaid.z;
 
-    // Important register initialization
-    mov.u64 %slot_start, 0;
-    mov.u64 %slot_end, 0;
-    mov.u64 %start_time, 0;
-    mov.u64 %end_time, 0;
-
     // Load parameters
-    ld.param.u64 %buffer_base, [KERNEL_NAME_param_PARAM];
+    ld.param.u64 %time_buffer_base, [KERNEL_NAME_param_PARAM1];
+    ld.param.u64 %idx_buffer_base, [KERNEL_NAME_param_PARAM2];
 
     // NOTE: Compute the entire block size using x, y, and z dimensions since y and
     // z may be larger than 1.
@@ -73,11 +68,19 @@
     //   global_tid = bid_linear * (bdim_x * bdim_y * bdim_z) + tid_linear
     mul.lo.u64 %global_tid, %bid_linear, %bdim_xyz;
     add.u64 %global_tid, %global_tid, %tid_linear;
+
+    // Calculate base address in buffer
     sub.u64 %buffer_tid, %global_tid, START;
+    mul.lo.u64 %tmp0, %buffer_tid, 16;
+    add.u64 %time_store_base, %time_buffer_base, %tmp0;
+    mul.lo.u64 %tmp0, %buffer_tid, 4;
+    add.u64 %idx_store_base, %idx_buffer_base, %tmp0;
 
     // Get total number of probed threads:
     //   n_thread = START - END + 1
     mov.u64 %n_thread, TOTAL;
+    mul.lo.u64 %time_store_increment, %n_thread, 16;
+    mul.lo.u64 %idx_store_increment, %n_thread, 4;
 
     // Check whether this thread need to be probed
     setp.ge.u64 %tmp_pred1, %global_tid, START;

@@ -15,16 +15,16 @@ Architecture:
 Usage:
     import torch
     import triton
-    from triton_instrument import TritonInstrument
+    from tri_ins import TritonInstrument
 
-    # Add buffer_ptr to kernel signature (last non-constexpr param)
+    # Add time_buffer_ptr and idx_buffer_ptr as the last two non-constexpr params
     @triton.jit
-    def my_kernel(x_ptr, n, buffer_ptr, BLOCK: tl.constexpr):
+    def my_kernel(x_ptr, n, time_buffer_ptr, idx_buffer_ptr, BLOCK: tl.constexpr):
         ...
 
     with TritonInstrument(mode="block") as inst:
-        buf = inst.allocate_buffer(n_probes_estimate=64, n_threads=128)
-        my_kernel[grid](x, n, buf, BLOCK=128)
+        time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=64, n_threads=128)
+        my_kernel[grid](x, n, time_buf, idx_buf, BLOCK=128)
         torch.cuda.synchronize()
         results = inst.get_results()
 """
@@ -34,10 +34,11 @@ import re
 import json
 import torch
 from typing import List, Dict, Tuple, Optional
-from ptx_parser import sub_block, builder
+from .ptx_parser import sub_block, builder
 
 # ---- Paths to PTX probe templates (from Exist_Package) ----
-PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Exist_Package')
+PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'Exist_Package')
 
 
 def _load_template(name: str) -> List[str]:
@@ -71,13 +72,14 @@ def _find_kernel_name(lines: List[str]) -> Optional[str]:
     return None
 
 
-def _find_buffer_param_index(lines: List[str], kernel_name: str) -> int:
+def _find_buffer_param_indices(lines: List[str], kernel_name: str) -> Tuple[int, int]:
     """
-    Find the parameter index of buffer_ptr in PTX.
+    Find the parameter indices of time_buffer_ptr and idx_buffer_ptr in PTX.
 
-    Triton appends 2 hidden params (global_scratch, profile_scratch) after
-    all user params. Our buffer_ptr is the last user param, so it's at
-    index = max_param_index - 2.
+    Triton appends 2 hidden params (global_scratch, profile_scratch) after all
+    user params. The two user buffer params (time then idx) are at:
+      time_param = max_param_index - 3
+      idx_param  = max_param_index - 2
     """
     param_pattern = re.compile(rf'{re.escape(kernel_name)}_param_(\d+)')
     max_idx = -1
@@ -86,10 +88,10 @@ def _find_buffer_param_index(lines: List[str], kernel_name: str) -> int:
         if m:
             idx = int(m.group(1))
             max_idx = max(max_idx, idx)
-    if max_idx < 2:
-        raise ValueError(f"Found only {max_idx+1} params — need at least 3 "
-                         f"(user params + global_scratch + profile_scratch)")
-    return max_idx - 2
+    if max_idx < 3:
+        raise ValueError(f"Found only {max_idx+1} params — need at least 4 "
+                         f"(user params + time_buffer + idx_buffer + 2 hidden)")
+    return max_idx - 3, max_idx - 2
 
 
 def instrument_ptx(ptx_str: str,
@@ -115,7 +117,7 @@ def instrument_ptx(ptx_str: str,
     if kernel_name is None:
         raise ValueError("No kernel entry point found in PTX")
 
-    buffer_param = _find_buffer_param_index(lines, kernel_name)
+    time_param, idx_param = _find_buffer_param_indices(lines, kernel_name)
 
     # Load probe templates from Exist_Package
     head_lines = _load_template('head.ptx')
@@ -125,22 +127,23 @@ def instrument_ptx(ptx_str: str,
 
     total = t_end - t_start + 1
 
-    # Parameterize head template
+    # Parameterize head template (PARAM1=time_buffer idx, PARAM2=idx_buffer idx)
     head_lines = _replace_mark(head_lines, r'KERNEL_NAME', kernel_name)
-    head_lines = _replace_mark(head_lines, r'PARAM', str(buffer_param))
+    head_lines = _replace_mark(head_lines, r'PARAM1', str(time_param))
+    head_lines = _replace_mark(head_lines, r'PARAM2', str(idx_param))
     head_lines = _replace_mark(head_lines, r'START', str(t_start))
     head_lines = _replace_mark(head_lines, r'END', str(t_end))
     head_lines = _replace_mark(head_lines, r'TOTAL', str(total))
 
-    # Parameterize config template
+    # Parameterize config template (uses single PARAM = time_buffer)
     config_lines = _replace_mark(config_lines, r'KERNEL_NAME', kernel_name)
-    config_lines = _replace_mark(config_lines, r'PARAM', str(buffer_param))
+    config_lines = _replace_mark(config_lines, r'PARAM', str(time_param))
 
     # Parse PTX into sub-blocks
     sub_block_list = builder(lines)
 
     print(f"[Instrument] Kernel: {kernel_name}")
-    print(f"[Instrument] Buffer param index: {buffer_param}")
+    print(f"[Instrument] time_param={time_param}, idx_param={idx_param}")
     print(f"[Instrument] Sub-blocks found: {len(sub_block_list)}")
     for blk in sub_block_list:
         blk.print_block()
@@ -236,11 +239,13 @@ class TritonInstrument:
     Context manager that instruments Triton kernels with timing probes.
 
     Monkey-patches CUDABackend.make_cubin to intercept PTX before compilation.
-    The user's kernel must include `buffer_ptr` as its last non-constexpr parameter.
+    The kernel must have `time_buffer_ptr` and `idx_buffer_ptr` as the last two
+    non-constexpr parameters (before Triton's 2 hidden params).
 
     Example:
         with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
-            kernel[grid](x, y, inst.buffer, BLOCK=128)
+            time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+            kernel[grid](x, y, time_buf, idx_buf, BLOCK=128)
             torch.cuda.synchronize()
             results = inst.get_results()
     """
@@ -252,14 +257,21 @@ class TritonInstrument:
         self._original_make_cubin = None
         self._loc_map: Dict[int, int] = {}
         self._n_probes: int = 0
-        self._buffer: Optional[torch.Tensor] = None
+        self._n_threads: int = 0
+        self._time_buffer: Optional[torch.Tensor] = None
+        self._idx_buffer: Optional[torch.Tensor] = None
         self._active: bool = False
         self._dump_ptx: Optional[str] = None  # Path to dump instrumented PTX
 
     @property
-    def buffer(self) -> Optional[torch.Tensor]:
-        """The GPU buffer tensor. Allocate with allocate_buffer() before kernel launch."""
-        return self._buffer
+    def time_buffer(self) -> Optional[torch.Tensor]:
+        """The GPU timing buffer (int64). See allocate_buffer()."""
+        return self._time_buffer
+
+    @property
+    def idx_buffer(self) -> Optional[torch.Tensor]:
+        """The GPU index buffer (int16). See allocate_buffer()."""
+        return self._idx_buffer
 
     @property
     def loc_map(self) -> Dict[int, int]:
@@ -272,31 +284,35 @@ class TritonInstrument:
         return self._n_probes
 
     def allocate_buffer(self, n_probes_estimate: int = 128,
-                        n_threads: Optional[int] = None) -> torch.Tensor:
+                        n_threads: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Pre-allocate the output buffer for probe data.
+        Pre-allocate the two output buffers for probe data.
 
-        Buffer layout (per the existing cuTile convention):
-            For each probe slot:
-                For each thread:
-                    [start_idx, end_idx, start_time, end_time]  (4 x int64 = 32 bytes)
-
-        Total size = n_probes * n_threads * 4 * 8 bytes
+        Buffer layout:
+          time_buffer: int64, size = n_probes * n_threads * 2
+            Per probe, per thread: [start_time, end_time]  (2 x 8 = 16 bytes)
+            store_increment = n_threads * 16
+          idx_buffer: int16, size = n_probes * n_threads * 2
+            Per probe, per thread: [start_idx, end_idx]  (2 x 2 = 4 bytes)
+            store_increment = n_threads * 4
 
         Args:
             n_probes_estimate: Estimated number of probes (overallocate is fine)
             n_threads: Number of probed threads (t_end - t_start + 1 by default)
 
         Returns:
-            torch.Tensor on CUDA, pass this as buffer_ptr to the kernel
+            (time_buffer, idx_buffer) — pass both to the kernel as the last two params
         """
         if n_threads is None:
             n_threads = self.t_end - self.t_start + 1
-        total_elements = n_probes_estimate * n_threads * 4
-        self._buffer = torch.zeros(total_elements, dtype=torch.int64, device='cuda')
-        print(f"[Instrument] Buffer allocated: {total_elements * 8} bytes "
-              f"({n_probes_estimate} probes x {n_threads} threads x 32B)")
-        return self._buffer
+        self._n_threads = n_threads
+        n_elem = n_probes_estimate * n_threads * 2
+        self._time_buffer = torch.zeros(n_elem, dtype=torch.int64, device='cuda')
+        self._idx_buffer  = torch.zeros(n_elem, dtype=torch.int16, device='cuda')
+        print(f"[Instrument] time_buffer: {n_elem * 8} bytes (int64)  "
+              f"idx_buffer: {n_elem * 2} bytes (int16)  "
+              f"({n_probes_estimate} probes x {n_threads} threads)")
+        return self._time_buffer, self._idx_buffer
 
     def _hooked_make_cubin(self, original_fn, self_backend, src, metadata, opt, capability):
         """Intercept PTX, insert probes, then compile to cubin."""
@@ -308,7 +324,7 @@ class TritonInstrument:
                 self._loc_map = loc_map
                 self._n_probes = n_probes
 
-                print(f"\n[Instrument] ✅ Inserted {n_probes} probes, mode={self.mode}")
+                print(f"\n[Instrument] Inserted {n_probes} probes, mode={self.mode}")
                 print(f"[Instrument] Thread range: [{self.t_start}, {self.t_end}]")
                 print(f"[Instrument] Loc map: {json.dumps(loc_map, indent=2)}")
 
@@ -319,7 +335,7 @@ class TritonInstrument:
 
                 src = modified_ptx
             except Exception as e:
-                print(f"[Instrument] ❌ Instrumentation failed: {e}")
+                print(f"[Instrument] Instrumentation failed: {e}")
                 import traceback
                 traceback.print_exc()
                 print("[Instrument] Falling back to original PTX")
@@ -351,42 +367,46 @@ class TritonInstrument:
 
     def get_results(self) -> Dict[int, dict]:
         """
-        Parse the buffer tensor and return structured timing data.
+        Parse the two buffer tensors and return structured timing data.
 
         Returns:
             Dict mapping probe_id -> {
                 'loc': int,           # Python source line number
-                'start_idx': Tensor,  # probe start index per thread
-                'end_idx': Tensor,    # probe end index per thread
-                'start_time': Tensor, # clock64 at entry
-                'end_time': Tensor,   # clock64 at exit
-                'duration': Tensor,   # end_time - start_time
+                'start_idx': Tensor,  # probe start index per thread (int16)
+                'end_idx': Tensor,    # probe end index per thread (int16)
+                'start_time': Tensor, # clock64 at entry (int64)
+                'end_time': Tensor,   # clock64 at exit (int64)
+                'duration': Tensor,   # end_time - start_time (int64)
             }
         """
-        if self._buffer is None:
-            raise RuntimeError("No buffer allocated. Call allocate_buffer() first.")
+        if self._time_buffer is None or self._idx_buffer is None:
+            raise RuntimeError("No buffers allocated. Call allocate_buffer() first.")
 
-        n_threads = self.t_end - self.t_start + 1
+        n_threads = self._n_threads or (self.t_end - self.t_start + 1)
         n_probes = self._n_probes
         if n_probes == 0:
             print("[Instrument] Warning: n_probes=0, no probes were inserted")
             return {}
 
-        # Reshape: [n_probes, n_threads, 4]
-        data = self._buffer[:n_probes * n_threads * 4].reshape(n_probes, n_threads, 4).cpu()
+        # Reshape: [n_probes, n_threads, 2]
+        time_data = self._time_buffer[:n_probes * n_threads * 2].reshape(n_probes, n_threads, 2).cpu()
+        idx_data  = self._idx_buffer[:n_probes * n_threads * 2].reshape(n_probes, n_threads, 2).cpu()
 
         results = {}
         for probe_idx in range(n_probes):
             probe_id = probe_idx + 1
-            loc = self._loc_map.get(probe_id, -1)
-            probe_data = data[probe_idx]
-            duration = probe_data[:, 3] - probe_data[:, 2]
+            loc        = self._loc_map.get(probe_id, -1)
+            start_time = time_data[probe_idx, :, 0]
+            end_time   = time_data[probe_idx, :, 1]
+            start_idx  = idx_data[probe_idx, :, 0]
+            end_idx    = idx_data[probe_idx, :, 1]
+            duration   = end_time - start_time
             results[probe_id] = {
                 'loc': loc,
-                'start_idx': probe_data[:, 0],
-                'end_idx': probe_data[:, 1],
-                'start_time': probe_data[:, 2],
-                'end_time': probe_data[:, 3],
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'start_time': start_time,
+                'end_time': end_time,
                 'duration': duration,
                 'mean_cycles': duration.float().mean().item(),
             }
