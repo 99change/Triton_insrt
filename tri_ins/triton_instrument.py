@@ -32,6 +32,7 @@ Usage:
 import os
 import re
 import json
+import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
 from .ptx_parser import sub_block, builder
@@ -162,7 +163,13 @@ def instrument_ptx(ptx_str: str,
 
     if mode == "block":
         for j, block in enumerate(sub_block_list):
+            # skip control-flow markers and structural blocks
             if block.is_start or block.is_end or block.is_sync:
+                continue
+            # skip bare label lines ($L__BBN_N:) — they are branch targets, not
+            # actual instructions; the probe on the preceding code block already
+            # captures the timing boundary just before the branch.
+            if block.is_label:
                 continue
             loc_probe_map[i] = block.loc
 
@@ -434,3 +441,81 @@ class TritonInstrument:
                 mean = mn = mx = 0
             print(f"{probe_id:>6} {data['loc']:>6} {mean:>14.1f} {mn:>12} {mx:>12}")
         print("=" * 70)
+
+    def export_csv_raw(self, path: str, results: Optional[Dict] = None):
+        """
+        Export raw per-probe per-thread data as CSV.
+
+        Matches cuTile matmul.py's buffer_list_raw format:
+          rows    = probes (one row per probe)
+          columns = for each thread: [start_idx, end_idx, start_time, end_time]
+
+        Header: probe_id, loc, t0_start_idx, t0_end_idx, t0_start_time, t0_end_time, ...
+        """
+        if results is None:
+            results = self.get_results()
+        n_threads = self._n_threads or (self.t_end - self.t_start + 1)
+
+        header = ['probe_id', 'loc']
+        for t in range(n_threads):
+            header += [f't{t}_start_idx', f't{t}_end_idx',
+                       f't{t}_start_time', f't{t}_end_time']
+
+        rows = []
+        for probe_id, data in sorted(results.items()):
+            row = [probe_id, data['loc']]
+            for t in range(n_threads):
+                row += [
+                    data['start_idx'][t].item(),
+                    data['end_idx'][t].item(),
+                    data['start_time'][t].item(),
+                    data['end_time'][t].item(),
+                ]
+            rows.append(row)
+
+        arr = np.array(rows, dtype=np.int64)
+        np.savetxt(path, arr, delimiter=',', fmt='%d',
+                   header=','.join(header), comments='')
+        print(f"[Instrument] Raw CSV saved: {path}  ({len(rows)} probes x {n_threads} threads)")
+
+    def export_csv_duration(self, path: str, results: Optional[Dict] = None):
+        """
+        Export per-thread timing summary as CSV.
+
+        Output format (matches cuTile's duration CSV, transposed to thread-centric):
+          rows    = threads  (index = thread_id within the probed range)
+          columns = per-probe duration [cycles] + total_cycles
+
+        Header: thread_id, probe_1_loc<N>, probe_2_loc<N>, ..., total_cycles
+        """
+        if results is None:
+            results = self.get_results()
+        n_threads = self._n_threads or (self.t_end - self.t_start + 1)
+        sorted_probes = sorted(results.keys())
+
+        header = ['thread_id']
+        for pid in sorted_probes:
+            header.append(f'probe_{pid}_loc{results[pid]["loc"]}')
+        header.append('total_cycles')
+
+        rows = []
+        for t in range(n_threads):
+            row = [self.t_start + t]
+            total = 0
+            for pid in sorted_probes:
+                d = results[pid]['duration'][t].item()
+                # negative values mean exit probe wasn't reached (branch taken)
+                d = max(d, 0)
+                row.append(d)
+                total += d
+            row.append(total)
+            rows.append(row)
+
+        arr = np.array(rows, dtype=np.int64)
+        np.savetxt(path, arr, delimiter=',', fmt='%d',
+                   header=','.join(header), comments='')
+        print(f"[Instrument] Duration CSV saved: {path}  ({n_threads} threads x {len(sorted_probes)} probes)")
+        if len(rows) > 0:
+            totals = arr[:, -1]
+            print(f"[Instrument] Total cycles — mean: {totals.mean():.0f}  "
+                  f"min: {totals.min()}  max: {totals.max()}")

@@ -146,6 +146,10 @@ def main():
         results = inst.get_results()
         inst.print_summary(results)
 
+        # Export CSV results
+        inst.export_csv_raw(os.path.join(output_dir, "raw.csv"), results)
+        inst.export_csv_duration(os.path.join(output_dir, "duration.csv"), results)
+
     # Unset to avoid affecting other compilations
     os.environ.pop("TRITON_ALWAYS_COMPILE", None)
 

@@ -38,6 +38,8 @@ class sub_block:
         self.is_start: bool = False
         self.is_end: bool = False
         self.is_sync: bool = False
+        self.is_bra: bool = False      # this 1-line block is a branch instruction
+        self.is_label: bool = False    # this 1-line block is a label
 
     def print_block(self):
         flags = []
@@ -47,6 +49,10 @@ class sub_block:
             flags.append("END")
         if self.is_sync:
             flags.append("SYNC")
+        if self.is_bra:
+            flags.append("BRA")
+        if self.is_label:
+            flags.append("LABEL")
         flag_str = f" [{','.join(flags)}]" if flags else ""
         print(f"  BB[{self.entry}-{self.exit}] loc={self.loc} "
               f"mma={len(self.mma_lines)} empty={len(self.empty_lines)}{flag_str}")
@@ -119,11 +125,17 @@ def builder(lines: List[str]) -> List[sub_block]:
             if current_sub_block.entry != ptx_line_num:
                 current_sub_block.exit = ptx_line_num - 1
                 sub_block_list.append(current_sub_block)
-            current_sub_block = sub_block(ptx_line_num, current_loc)
-            current_sub_block.exit = ptx_line_num
-            sub_block_list.append(current_sub_block)
+            boundary_block = sub_block(ptx_line_num, current_loc)
+            boundary_block.exit = ptx_line_num
+            if bra_con_match or bra_uni_match:
+                boundary_block.is_bra = True
+            else:
+                boundary_block.is_label = True
+            sub_block_list.append(boundary_block)
             if i + 1 < len(lines) and not re.match(LOC, lines[i + 1]):
                 current_sub_block = sub_block(ptx_line_num + 1, current_loc)
+            else:
+                current_sub_block = boundary_block  # will be replaced by loc handler
         elif end_match:
             current_sub_block.exit = ptx_line_num
             current_sub_block.is_end = True

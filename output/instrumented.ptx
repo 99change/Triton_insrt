@@ -1660,37 +1660,13 @@ $JUMP_START_45_PROBE:
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
 $JUMP_END_45_PROBE:
 // ---- Timer Stop ----
+$L__BB0_2:                              // %.lr.ph
+	.loc	1 0 22                          // test_instrument.py:0:22
 // ---- Timer Start ----
     @!%is_probed_thread bra $JUMP_START_46_PROBE;
     mov.u16 %start_idx, 46;
     mov.u64 %start_time, %clock64;
 $JUMP_START_46_PROBE:
-// ---- Timer Start ----
-$L__BB0_2:                              // %.lr.ph
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 46;
-
-    @!%is_probed_thread bra $JUMP_END_46_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_46_PROBE:
-// ---- Timer Stop ----
-	.loc	1 0 22                          // test_instrument.py:0:22
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_47_PROBE;
-    mov.u16 %start_idx, 47;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_47_PROBE:
 // ---- Timer Start ----
 	cvt.s64.s32 	%rd1, %r145;
 	cvt.s64.s32 	%rd2, %r146;
@@ -1735,9 +1711,9 @@ $JUMP_START_47_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 47;
+    mov.u16 %end_idx, 46;
 
-    @!%is_probed_thread bra $JUMP_END_47_PROBE;
+    @!%is_probed_thread bra $JUMP_END_46_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -1748,14 +1724,14 @@ $JUMP_START_47_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_47_PROBE:
+$JUMP_END_46_PROBE:
 // ---- Timer Stop ----
 	.loc	1 55 22                         // test_instrument.py:55:22
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_48_PROBE;
-    mov.u16 %start_idx, 48;
+    @!%is_probed_thread bra $JUMP_START_47_PROBE;
+    mov.u16 %start_idx, 47;
     mov.u64 %start_time, %clock64;
-$JUMP_START_48_PROBE:
+$JUMP_START_47_PROBE:
 // ---- Timer Start ----
 	mad.lo.s32 	%r210, %r41, %r19, %r22;
 	mul.wide.s32 	%rd22, %r210, 2;
@@ -2058,9 +2034,9 @@ $JUMP_START_48_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 48;
+    mov.u16 %end_idx, 47;
 
-    @!%is_probed_thread bra $JUMP_END_48_PROBE;
+    @!%is_probed_thread bra $JUMP_END_47_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -2071,38 +2047,14 @@ $JUMP_START_48_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_48_PROBE:
+$JUMP_END_47_PROBE:
 // ---- Timer Stop ----
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_49_PROBE;
-    mov.u16 %start_idx, 49;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_49_PROBE:
-// ---- Timer Start ----
 $L__BB0_3:                              // =>This Inner Loop Header: Depth=1
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 49;
-
-    @!%is_probed_thread bra $JUMP_END_49_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_49_PROBE:
-// ---- Timer Stop ----
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_50_PROBE;
-    mov.u16 %start_idx, 50;
+    @!%is_probed_thread bra $JUMP_START_48_PROBE;
+    mov.u16 %start_idx, 48;
     mov.u64 %start_time, %clock64;
-$JUMP_START_50_PROBE:
+$JUMP_START_48_PROBE:
 // ---- Timer Start ----
 	setp.lt.s32 	%p13, %r935, %r31;
 	add.s32 	%r435, %r677, 1;
@@ -2173,9 +2125,9 @@ $JUMP_START_50_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 50;
+    mov.u16 %end_idx, 48;
 
-    @!%is_probed_thread bra $JUMP_END_50_PROBE;
+    @!%is_probed_thread bra $JUMP_END_48_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -2186,14 +2138,14 @@ $JUMP_START_50_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_50_PROBE:
+$JUMP_END_48_PROBE:
 // ---- Timer Stop ----
 	.loc	1 58 35                         // test_instrument.py:58:35
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_51_PROBE;
-    mov.u16 %start_idx, 51;
+    @!%is_probed_thread bra $JUMP_START_49_PROBE;
+    mov.u16 %start_idx, 49;
     mov.u64 %start_time, %clock64;
-$JUMP_START_51_PROBE:
+$JUMP_START_49_PROBE:
 // ---- Timer Start ----
 	// begin inline asm
 	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 { %r679, %r680, %r681, %r682 }, { %r214, %r215, %r216, %r217 }, { %r218, %r219 }, { %r679, %r680, %r681, %r682 };
@@ -2966,9 +2918,9 @@ $JUMP_START_51_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 51;
+    mov.u16 %end_idx, 49;
 
-    @!%is_probed_thread bra $JUMP_END_51_PROBE;
+    @!%is_probed_thread bra $JUMP_END_49_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -2979,14 +2931,14 @@ $JUMP_START_51_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_51_PROBE:
+$JUMP_END_49_PROBE:
 // ---- Timer Stop ----
 	.loc	1 59 18                         // test_instrument.py:59:18
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_52_PROBE;
-    mov.u16 %start_idx, 52;
+    @!%is_probed_thread bra $JUMP_START_50_PROBE;
+    mov.u16 %start_idx, 50;
     mov.u64 %start_time, %clock64;
-$JUMP_START_52_PROBE:
+$JUMP_START_50_PROBE:
 // ---- Timer Start ----
 	add.s64 	%rd107, %rd196, %rd46;
 	add.s64 	%rd108, %rd196, %rd45;
@@ -2998,9 +2950,9 @@ $JUMP_START_52_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 52;
+    mov.u16 %end_idx, 50;
 
-    @!%is_probed_thread bra $JUMP_END_52_PROBE;
+    @!%is_probed_thread bra $JUMP_END_50_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3011,14 +2963,14 @@ $JUMP_START_52_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_52_PROBE:
+$JUMP_END_50_PROBE:
 // ---- Timer Stop ----
 	.loc	1 60 18                         // test_instrument.py:60:18
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_53_PROBE;
-    mov.u16 %start_idx, 53;
+    @!%is_probed_thread bra $JUMP_START_51_PROBE;
+    mov.u16 %start_idx, 51;
     mov.u64 %start_time, %clock64;
-$JUMP_START_53_PROBE:
+$JUMP_START_51_PROBE:
 // ---- Timer Start ----
 	add.s64 	%rd114, %rd196, %rd39;
 	add.s64 	%rd115, %rd197, %rd38;
@@ -3039,9 +2991,9 @@ $JUMP_START_53_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 53;
+    mov.u16 %end_idx, 51;
 
-    @!%is_probed_thread bra $JUMP_END_53_PROBE;
+    @!%is_probed_thread bra $JUMP_END_51_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3052,14 +3004,14 @@ $JUMP_START_53_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_53_PROBE:
+$JUMP_END_51_PROBE:
 // ---- Timer Stop ----
 	.loc	1 55 22                         // test_instrument.py:55:22
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_54_PROBE;
-    mov.u16 %start_idx, 54;
+    @!%is_probed_thread bra $JUMP_START_52_PROBE;
+    mov.u16 %start_idx, 52;
     mov.u64 %start_time, %clock64;
-$JUMP_START_54_PROBE:
+$JUMP_START_52_PROBE:
 // ---- Timer Start ----
 	add.s64 	%rd130, %rd197, %rd22;
 	add.s32 	%r446, %r678, 1;
@@ -3068,9 +3020,9 @@ $JUMP_START_54_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 54;
+    mov.u16 %end_idx, 52;
 
-    @!%is_probed_thread bra $JUMP_END_54_PROBE;
+    @!%is_probed_thread bra $JUMP_END_52_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3081,14 +3033,14 @@ $JUMP_START_54_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_54_PROBE:
+$JUMP_END_52_PROBE:
 // ---- Timer Stop ----
 	.loc	1 56 51                         // test_instrument.py:56:51
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_55_PROBE;
-    mov.u16 %start_idx, 55;
+    @!%is_probed_thread bra $JUMP_START_53_PROBE;
+    mov.u16 %start_idx, 53;
     mov.u64 %start_time, %clock64;
-$JUMP_START_55_PROBE:
+$JUMP_START_53_PROBE:
 // ---- Timer Start ----
 	setp.lt.s32 	%p16, %r24, %r676;
 	.loc	1 56 20                         // test_instrument.py:56:20
@@ -3139,9 +3091,9 @@ $JUMP_START_55_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 55;
+    mov.u16 %end_idx, 53;
 
-    @!%is_probed_thread bra $JUMP_END_55_PROBE;
+    @!%is_probed_thread bra $JUMP_END_53_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3152,14 +3104,14 @@ $JUMP_START_55_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_55_PROBE:
+$JUMP_END_53_PROBE:
 // ---- Timer Stop ----
 	.loc	1 57 20                         // test_instrument.py:57:20
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_56_PROBE;
-    mov.u16 %start_idx, 56;
+    @!%is_probed_thread bra $JUMP_START_54_PROBE;
+    mov.u16 %start_idx, 54;
     mov.u64 %start_time, %clock64;
-$JUMP_START_56_PROBE:
+$JUMP_START_54_PROBE:
 // ---- Timer Start ----
 	shl.b32 	%r451, %r678, 15;
 	add.s32 	%r452, %r194, %r451;
@@ -3240,6 +3192,61 @@ $JUMP_START_56_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
+    mov.u16 %end_idx, 54;
+
+    @!%is_probed_thread bra $JUMP_END_54_PROBE;
+
+    // Store data
+    st.global.u16 [%idx_store_base], %start_idx;
+    st.global.u16 [%idx_store_base + 2], %end_idx;
+    st.global.u64 [%time_store_base], %start_time;
+    st.global.u64 [%time_store_base + 8], %end_time;
+
+    // Store address self increment
+    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
+    add.u64 %time_store_base, %time_store_base, %time_store_increment;
+$JUMP_END_54_PROBE:
+// ---- Timer Stop ----
+	.loc	1 55 22                         // test_instrument.py:55:22
+// ---- Timer Start ----
+    @!%is_probed_thread bra $JUMP_START_55_PROBE;
+    mov.u16 %start_idx, 55;
+    mov.u64 %start_time, %clock64;
+$JUMP_START_55_PROBE:
+// ---- Timer Start ----
+	add.s32 	%r935, %r935, 1;
+	add.s64 	%rd197, %rd197, %rd23;
+	add.s64 	%rd196, %rd196, 128;
+	add.s32 	%r676, %r676, -64;
+	setp.ne.b32 	%p21, %r25, %r935;
+// ---- Timer Stop ----
+    // Timer stop
+    mov.u64 %end_time, %clock64;
+    mov.u16 %end_idx, 55;
+
+    @!%is_probed_thread bra $JUMP_END_55_PROBE;
+
+    // Store data
+    st.global.u16 [%idx_store_base], %start_idx;
+    st.global.u16 [%idx_store_base + 2], %end_idx;
+    st.global.u64 [%time_store_base], %start_time;
+    st.global.u64 [%time_store_base + 8], %end_time;
+
+    // Store address self increment
+    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
+    add.u64 %time_store_base, %time_store_base, %time_store_increment;
+$JUMP_END_55_PROBE:
+// ---- Timer Stop ----
+// ---- Timer Start ----
+    @!%is_probed_thread bra $JUMP_START_56_PROBE;
+    mov.u16 %start_idx, 56;
+    mov.u64 %start_time, %clock64;
+$JUMP_START_56_PROBE:
+// ---- Timer Start ----
+	@%p21 bra 	$L__BB0_3;
+// ---- Timer Stop ----
+    // Timer stop
+    mov.u64 %end_time, %clock64;
     mov.u16 %end_idx, 56;
 
     @!%is_probed_thread bra $JUMP_END_56_PROBE;
@@ -3255,18 +3262,13 @@ $JUMP_START_56_PROBE:
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
 $JUMP_END_56_PROBE:
 // ---- Timer Stop ----
-	.loc	1 55 22                         // test_instrument.py:55:22
 // ---- Timer Start ----
     @!%is_probed_thread bra $JUMP_START_57_PROBE;
     mov.u16 %start_idx, 57;
     mov.u64 %start_time, %clock64;
 $JUMP_START_57_PROBE:
 // ---- Timer Start ----
-	add.s32 	%r935, %r935, 1;
-	add.s64 	%rd197, %rd197, %rd23;
-	add.s64 	%rd196, %rd196, 128;
-	add.s32 	%r676, %r676, -64;
-	setp.ne.b32 	%p21, %r25, %r935;
+// %bb.4:                               // %._crit_edge.loopexit
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
@@ -3285,62 +3287,12 @@ $JUMP_START_57_PROBE:
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
 $JUMP_END_57_PROBE:
 // ---- Timer Stop ----
+	.loc	1 62 23                         // test_instrument.py:62:23
 // ---- Timer Start ----
     @!%is_probed_thread bra $JUMP_START_58_PROBE;
     mov.u16 %start_idx, 58;
     mov.u64 %start_time, %clock64;
 $JUMP_START_58_PROBE:
-// ---- Timer Start ----
-	@%p21 bra 	$L__BB0_3;
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 58;
-
-    @!%is_probed_thread bra $JUMP_END_58_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_58_PROBE:
-// ---- Timer Stop ----
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_59_PROBE;
-    mov.u16 %start_idx, 59;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_59_PROBE:
-// ---- Timer Start ----
-// %bb.4:                               // %._crit_edge.loopexit
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 59;
-
-    @!%is_probed_thread bra $JUMP_END_59_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_59_PROBE:
-// ---- Timer Stop ----
-	.loc	1 62 23                         // test_instrument.py:62:23
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_60_PROBE;
-    mov.u16 %start_idx, 60;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_60_PROBE:
 // ---- Timer Start ----
 	cvt.rn.f16x2.f32 	%r1064, %r934, %r930;
 	cvt.rn.f16x2.f32 	%r1063, %r926, %r922;
@@ -3473,9 +3425,9 @@ $JUMP_START_60_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 60;
+    mov.u16 %end_idx, 58;
 
-    @!%is_probed_thread bra $JUMP_END_60_PROBE;
+    @!%is_probed_thread bra $JUMP_END_58_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3486,21 +3438,21 @@ $JUMP_START_60_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_60_PROBE:
+$JUMP_END_58_PROBE:
 // ---- Timer Stop ----
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_61_PROBE;
-    mov.u16 %start_idx, 61;
+    @!%is_probed_thread bra $JUMP_START_59_PROBE;
+    mov.u16 %start_idx, 59;
     mov.u64 %start_time, %clock64;
-$JUMP_START_61_PROBE:
+$JUMP_START_59_PROBE:
 // ---- Timer Start ----
 	bra.uni 	$L__BB0_5;
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 61;
+    mov.u16 %end_idx, 59;
 
-    @!%is_probed_thread bra $JUMP_END_61_PROBE;
+    @!%is_probed_thread bra $JUMP_END_59_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3511,39 +3463,15 @@ $JUMP_START_61_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_61_PROBE:
+$JUMP_END_59_PROBE:
 // ---- Timer Stop ----
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_62_PROBE;
-    mov.u16 %start_idx, 62;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_62_PROBE:
-// ---- Timer Start ----
 $L__BB0_1:                              // %.._crit_edge_crit_edge
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 62;
-
-    @!%is_probed_thread bra $JUMP_END_62_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_62_PROBE:
-// ---- Timer Stop ----
 	.loc	1 68 21                         // test_instrument.py:68:21
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_63_PROBE;
-    mov.u16 %start_idx, 63;
+    @!%is_probed_thread bra $JUMP_START_60_PROBE;
+    mov.u16 %start_idx, 60;
     mov.u64 %start_time, %clock64;
-$JUMP_START_63_PROBE:
+$JUMP_START_60_PROBE:
 // ---- Timer Start ----
 	shl.b32 	%r936, %r23, 4;
 	mov.b32 	%r937, 0;
@@ -3677,9 +3605,9 @@ $JUMP_START_63_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 63;
+    mov.u16 %end_idx, 60;
 
-    @!%is_probed_thread bra $JUMP_END_63_PROBE;
+    @!%is_probed_thread bra $JUMP_END_60_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3690,47 +3618,23 @@ $JUMP_START_63_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_63_PROBE:
+$JUMP_END_60_PROBE:
 // ---- Timer Stop ----
-// ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_64_PROBE;
-    mov.u16 %start_idx, 64;
-    mov.u64 %start_time, %clock64;
-$JUMP_START_64_PROBE:
-// ---- Timer Start ----
 $L__BB0_5:                              // %._crit_edge
-// ---- Timer Stop ----
-    // Timer stop
-    mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 64;
-
-    @!%is_probed_thread bra $JUMP_END_64_PROBE;
-
-    // Store data
-    st.global.u16 [%idx_store_base], %start_idx;
-    st.global.u16 [%idx_store_base + 2], %end_idx;
-    st.global.u64 [%time_store_base], %start_time;
-    st.global.u64 [%time_store_base + 8], %end_time;
-
-    // Store address self increment
-    add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
-    add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_64_PROBE:
-// ---- Timer Stop ----
 	.loc	1 48 51                         // test_instrument.py:48:51
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_65_PROBE;
-    mov.u16 %start_idx, 65;
+    @!%is_probed_thread bra $JUMP_START_61_PROBE;
+    mov.u16 %start_idx, 61;
     mov.u64 %start_time, %clock64;
-$JUMP_START_65_PROBE:
+$JUMP_START_61_PROBE:
 // ---- Timer Start ----
 	or.b32 	%r586, %r1, %r4;
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 65;
+    mov.u16 %end_idx, 61;
 
-    @!%is_probed_thread bra $JUMP_END_65_PROBE;
+    @!%is_probed_thread bra $JUMP_END_61_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3741,14 +3645,14 @@ $JUMP_START_65_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_65_PROBE:
+$JUMP_END_61_PROBE:
 // ---- Timer Stop ----
 	.loc	1 48 38                         // test_instrument.py:48:38
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_66_PROBE;
-    mov.u16 %start_idx, 66;
+    @!%is_probed_thread bra $JUMP_START_62_PROBE;
+    mov.u16 %start_idx, 62;
     mov.u64 %start_time, %clock64;
-$JUMP_START_66_PROBE:
+$JUMP_START_62_PROBE:
 // ---- Timer Start ----
 	or.b32 	%r587, %r586, 124;
 	or.b32 	%r588, %r586, 120;
@@ -3822,9 +3726,9 @@ $JUMP_START_66_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 66;
+    mov.u16 %end_idx, 62;
 
-    @!%is_probed_thread bra $JUMP_END_66_PROBE;
+    @!%is_probed_thread bra $JUMP_END_62_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3835,14 +3739,14 @@ $JUMP_START_66_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_66_PROBE:
+$JUMP_END_62_PROBE:
 // ---- Timer Stop ----
 	.loc	1 66 21                         // test_instrument.py:66:21
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_67_PROBE;
-    mov.u16 %start_idx, 67;
+    @!%is_probed_thread bra $JUMP_START_63_PROBE;
+    mov.u16 %start_idx, 63;
     mov.u64 %start_time, %clock64;
-$JUMP_START_67_PROBE:
+$JUMP_START_63_PROBE:
 // ---- Timer Start ----
 	mad.wide.s32 	%rd163, %r618, 2, %rd48;
 	mad.wide.s32 	%rd164, %r619, 2, %rd48;
@@ -3879,9 +3783,9 @@ $JUMP_START_67_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 67;
+    mov.u16 %end_idx, 63;
 
-    @!%is_probed_thread bra $JUMP_END_67_PROBE;
+    @!%is_probed_thread bra $JUMP_END_63_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3892,14 +3796,14 @@ $JUMP_START_67_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_67_PROBE:
+$JUMP_END_63_PROBE:
 // ---- Timer Stop ----
 	.loc	1 66 52                         // test_instrument.py:66:52
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_68_PROBE;
-    mov.u16 %start_idx, 68;
+    @!%is_probed_thread bra $JUMP_START_64_PROBE;
+    mov.u16 %start_idx, 64;
     mov.u64 %start_time, %clock64;
-$JUMP_START_68_PROBE:
+$JUMP_START_64_PROBE:
 // ---- Timer Start ----
 	mul.wide.s32 	%rd195, %r21, 2;
 	add.s64 	%rd131, %rd163, %rd195;
@@ -3937,9 +3841,9 @@ $JUMP_START_68_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 68;
+    mov.u16 %end_idx, 64;
 
-    @!%is_probed_thread bra $JUMP_END_68_PROBE;
+    @!%is_probed_thread bra $JUMP_END_64_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3950,14 +3854,14 @@ $JUMP_START_68_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_68_PROBE:
+$JUMP_END_64_PROBE:
 // ---- Timer Stop ----
 	.loc	1 67 33                         // test_instrument.py:67:33
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_69_PROBE;
-    mov.u16 %start_idx, 69;
+    @!%is_probed_thread bra $JUMP_START_65_PROBE;
+    mov.u16 %start_idx, 65;
     mov.u64 %start_time, %clock64;
-$JUMP_START_69_PROBE:
+$JUMP_START_65_PROBE:
 // ---- Timer Start ----
 	setp.lt.s32 	%p30, %r586, %r38;
 	setp.lt.s32 	%p31, %r614, %r38;
@@ -3970,9 +3874,9 @@ $JUMP_START_69_PROBE:
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 69;
+    mov.u16 %end_idx, 65;
 
-    @!%is_probed_thread bra $JUMP_END_69_PROBE;
+    @!%is_probed_thread bra $JUMP_END_65_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -3983,22 +3887,22 @@ $JUMP_START_69_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_69_PROBE:
+$JUMP_END_65_PROBE:
 // ---- Timer Stop ----
 	.loc	1 67 58                         // test_instrument.py:67:58
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_70_PROBE;
-    mov.u16 %start_idx, 70;
+    @!%is_probed_thread bra $JUMP_START_66_PROBE;
+    mov.u16 %start_idx, 66;
     mov.u64 %start_time, %clock64;
-$JUMP_START_70_PROBE:
+$JUMP_START_66_PROBE:
 // ---- Timer Start ----
 	setp.lt.s32 	%p38, %r21, %r39;
 // ---- Timer Stop ----
     // Timer stop
     mov.u64 %end_time, %clock64;
-    mov.u16 %end_idx, 70;
+    mov.u16 %end_idx, 66;
 
-    @!%is_probed_thread bra $JUMP_END_70_PROBE;
+    @!%is_probed_thread bra $JUMP_END_66_PROBE;
 
     // Store data
     st.global.u16 [%idx_store_base], %start_idx;
@@ -4009,14 +3913,14 @@ $JUMP_START_70_PROBE:
     // Store address self increment
     add.u64 %idx_store_base, %idx_store_base, %idx_store_increment;
     add.u64 %time_store_base, %time_store_base, %time_store_increment;
-$JUMP_END_70_PROBE:
+$JUMP_END_66_PROBE:
 // ---- Timer Stop ----
 	.loc	1 67 39                         // test_instrument.py:67:39
 // ---- Timer Start ----
-    @!%is_probed_thread bra $JUMP_START_71_PROBE;
-    mov.u16 %start_idx, 71;
+    @!%is_probed_thread bra $JUMP_START_67_PROBE;
+    mov.u16 %start_idx, 67;
     mov.u64 %start_time, %clock64;
-$JUMP_START_71_PROBE:
+$JUMP_START_67_PROBE:
 // ---- Timer Start ----
 	and.pred 	%p22, %p30, %p38;
 	and.pred 	%p23, %p31, %p38;
