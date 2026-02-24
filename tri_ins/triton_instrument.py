@@ -257,7 +257,8 @@ class TritonInstrument:
             results = inst.get_results()
     """
 
-    def __init__(self, mode: str = "block", t_start: int = 0, t_end: int = 127):
+    def __init__(self, mode: str = "block", t_start: int = 0, t_end: int = 127,
+                 dump_ptx: Optional[str] = None):
         self.mode = mode
         self.t_start = t_start
         self.t_end = t_end
@@ -268,7 +269,7 @@ class TritonInstrument:
         self._time_buffer: Optional[torch.Tensor] = None
         self._idx_buffer: Optional[torch.Tensor] = None
         self._active: bool = False
-        self._dump_ptx: Optional[str] = None  # Path to dump instrumented PTX
+        self._dump_ptx: Optional[str] = dump_ptx  # Path to dump instrumented PTX
 
     @property
     def time_buffer(self) -> Optional[torch.Tensor]:
