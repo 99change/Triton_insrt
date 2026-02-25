@@ -117,8 +117,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Probe the first block's threads: global_tid 0..127
-    with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
-        inst._dump_ptx = os.path.join(output_dir, "instrumented.ptx")
+    with TritonInstrument(mode="block", t_start=0, t_end=127,
+                          output_dir=output_dir) as inst:
 
         # Allocate both buffers (generous estimate: 128 probes, 128 threads)
         time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)

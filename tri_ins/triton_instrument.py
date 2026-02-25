@@ -98,15 +98,21 @@ def _find_buffer_param_indices(lines: List[str], kernel_name: str) -> Tuple[int,
 def instrument_ptx(ptx_str: str,
                    mode: str = "block",
                    t_start: int = 0,
-                   t_end: int = 127) -> Tuple[str, Dict[int, int], int]:
+                   t_end: int = 127,
+                   target_file: int = 1) -> Tuple[str, Dict[int, int], int]:
     """
     Insert instrumentation probes into a PTX string.
 
     Args:
-        ptx_str:  Original PTX from Triton compilation
-        mode:     "block" | "single" | "entire" | "config"
-        t_start:  First global thread ID to probe
-        t_end:    Last global thread ID to probe
+        ptx_str:     Original PTX from Triton compilation
+        mode:        "block" | "single" | "entire" | "config"
+        t_start:     First global thread ID to probe
+        t_end:       Last global thread ID to probe
+        target_file: Source file index to instrument (from .loc directive).
+                     Triton PTX can reference multiple source files; use this
+                     to select which one corresponds to your kernel file.
+                     Run with any PTX and inspect the printed sub-blocks to
+                     find the right index (default=1).
 
     Returns:
         (modified_ptx_str, loc_map, n_probes)
@@ -145,7 +151,9 @@ def instrument_ptx(ptx_str: str,
 
     print(f"[Instrument] Kernel: {kernel_name}")
     print(f"[Instrument] time_param={time_param}, idx_param={idx_param}")
-    print(f"[Instrument] Sub-blocks found: {len(sub_block_list)}")
+    print(f"[Instrument] Sub-blocks found: {len(sub_block_list)}  (target_file={target_file})")
+    file_indices = sorted({b.file for b in sub_block_list})
+    print(f"[Instrument] Source file indices seen in .loc: {file_indices}")
     for blk in sub_block_list:
         blk.print_block()
 
@@ -159,17 +167,15 @@ def instrument_ptx(ptx_str: str,
     elif mode == "config":
         offset += _insert_lines(lines, start_line, config_lines)
 
-    i = 1  # probe index (1-based)
+    i = 0  # probe index (0-based, matches insert_ptx.py)
 
     if mode == "block":
         for j, block in enumerate(sub_block_list):
             # skip control-flow markers and structural blocks
             if block.is_start or block.is_end or block.is_sync:
                 continue
-            # skip bare label lines ($L__BBN_N:) — they are branch targets, not
-            # actual instructions; the probe on the preceding code block already
-            # captures the timing boundary just before the branch.
-            if block.is_label:
+            # only instrument blocks that belong to the target source file
+            if block.file != target_file:
                 continue
             loc_probe_map[i] = block.loc
 
@@ -235,7 +241,7 @@ def instrument_ptx(ptx_str: str,
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    n_probes = i - 1
+    n_probes = i  # i was incremented once per probe pair, so i == total probes
     modified_ptx = ''.join(lines)
 
     return modified_ptx, loc_probe_map, n_probes
@@ -249,8 +255,24 @@ class TritonInstrument:
     The kernel must have `time_buffer_ptr` and `idx_buffer_ptr` as the last two
     non-constexpr parameters (before Triton's 2 hidden params).
 
+    Args:
+        mode:        Instrumentation mode: "block" | "single" | "entire" | "config"
+        t_start:     First global thread ID to probe
+        t_end:       Last global thread ID to probe
+        target_file: Source file index to target (from PTX .loc directives).
+                     Triton PTX can embed code from multiple source files
+                     (e.g. your kernel + triton stdlib helpers). The first run
+                     will print all file indices found — use that to pick the
+                     right one (default=1, which is typically the user kernel).
+        output_dir:  Directory where both PTX files are always saved.
+                     - ``<output_dir>/original.ptx``     — PTX before instrumentation
+                     - ``<output_dir>/instrumented.ptx`` — PTX after instrumentation
+                     The directory is created automatically if it does not exist.
+                     Pass ``None`` to disable saving.
+
     Example:
-        with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
+        with TritonInstrument(mode="block", t_start=0, t_end=127, target_file=1,
+                              output_dir="output") as inst:
             time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
             kernel[grid](x, y, time_buf, idx_buf, BLOCK=128)
             torch.cuda.synchronize()
@@ -258,10 +280,13 @@ class TritonInstrument:
     """
 
     def __init__(self, mode: str = "block", t_start: int = 0, t_end: int = 127,
-                 dump_ptx: Optional[str] = None):
+                 target_file: int = 1,
+                 output_dir: Optional[str] = "output"):
         self.mode = mode
         self.t_start = t_start
         self.t_end = t_end
+        self.target_file = target_file
+        self.output_dir = output_dir
         self._original_make_cubin = None
         self._loc_map: Dict[int, int] = {}
         self._n_probes: int = 0
@@ -269,7 +294,6 @@ class TritonInstrument:
         self._time_buffer: Optional[torch.Tensor] = None
         self._idx_buffer: Optional[torch.Tensor] = None
         self._active: bool = False
-        self._dump_ptx: Optional[str] = dump_ptx  # Path to dump instrumented PTX
 
     @property
     def time_buffer(self) -> Optional[torch.Tensor]:
@@ -326,8 +350,17 @@ class TritonInstrument:
         """Intercept PTX, insert probes, then compile to cubin."""
         if self._active:
             try:
+                # Always save original PTX when output_dir is set
+                if self.output_dir:
+                    os.makedirs(self.output_dir, exist_ok=True)
+                    orig_path = os.path.join(self.output_dir, "original.ptx")
+                    with open(orig_path, 'w') as f:
+                        f.write(src)
+                    print(f"[Instrument] Saved original PTX  -> {orig_path}")
+
                 modified_ptx, loc_map, n_probes = instrument_ptx(
-                    src, mode=self.mode, t_start=self.t_start, t_end=self.t_end
+                    src, mode=self.mode, t_start=self.t_start, t_end=self.t_end,
+                    target_file=self.target_file
                 )
                 self._loc_map = loc_map
                 self._n_probes = n_probes
@@ -336,10 +369,12 @@ class TritonInstrument:
                 print(f"[Instrument] Thread range: [{self.t_start}, {self.t_end}]")
                 print(f"[Instrument] Loc map: {json.dumps(loc_map, indent=2)}")
 
-                if self._dump_ptx:
-                    with open(self._dump_ptx, 'w') as f:
+                # Always save instrumented PTX when output_dir is set
+                if self.output_dir:
+                    inst_path = os.path.join(self.output_dir, "instrumented.ptx")
+                    with open(inst_path, 'w') as f:
                         f.write(modified_ptx)
-                    print(f"[Instrument] Dumped instrumented PTX to {self._dump_ptx}")
+                    print(f"[Instrument] Saved instrumented PTX -> {inst_path}")
 
                 src = modified_ptx
             except Exception as e:
@@ -402,8 +437,8 @@ class TritonInstrument:
 
         results = {}
         for probe_idx in range(n_probes):
-            probe_id = probe_idx + 1
-            loc        = self._loc_map.get(probe_id, -1)
+            probe_id = probe_idx      # display key matches 0-based PTX INDEX
+            loc        = self._loc_map.get(probe_idx, -1)
             start_time = time_data[probe_idx, :, 0]
             end_time   = time_data[probe_idx, :, 1]
             start_idx  = idx_data[probe_idx, :, 0]
