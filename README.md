@@ -1,456 +1,155 @@
-# Triton PTX Instrumentation (tri_ins)
+# Triton PTX Instrumentation
 
-Port of the cuTile PTX timing-probe system to Triton. Intercepts PTX during
-Triton compilation, inserts entry/exit timing probes at sub-block boundaries,
-and collects per-thread cycle counts via a GPU buffer tensor.
+对 Triton kernel 编译产生的 PTX 进行自动插桩，在每个基本块的入口和出口插入时钟采样探针，从而获得 GPU 上各 sub-block 的执行耗时。
 
-## Project Structure
+---
+
+## 系统组成
 
 ```
 Triton_insrt/
-├── tri_ins/                   # Core instrumentation package
-│   ├── __init__.py            #   Public API: TritonInstrument, instrument_ptx
-│   ├── ptx_parser.py          #   PTX → sub-block CFG parser (adapted from cuTile)
-│   └── triton_instrument.py   #   Hook + probe insertion + results collection
-├── Exist_Package/             # Original cuTile probe templates (DO NOT MODIFY)
-│   ├── head.ptx / entry.ptx / exit.ptx / config.ptx
-│   ├── sub_block.py / insert_ptx.py
-│   └── config.ini
-├── examples/                  # Runnable example scripts
-│   ├── test_instrument.py     #   E2E matmul + instrumentation test
-│   ├── dump_ptx.py            #   Dump & inspect PTX .loc directives
-│   └── matmul.py              #   Standalone Triton matmul benchmark
-├── output/                    # Generated PTX artifacts (gitignored)
-└── README.md
+├── tri_ins/                   # 核心库
+│   ├── __init__.py            # 对外暴露 TritonInstrument
+│   ├── ptx_parser.py          # PTX 解析器：把 PTX 切分成 sub_block
+│   └── triton_instrument.py   # 插桩引擎 + 结果收集
+│
+├── Exist_Package/             # PTX 探针模板（来自 cuTile）
+│   ├── head.ptx               # 寄存器声明 / 初始化代码段
+│   ├── entry.ptx              # 探针入口模板（START：记录进入时间戳）
+│   ├── exit.ptx               # 探针出口模板（END：记录离开时间戳）
+│   ├── config.ptx             # 探针配置（线程过滤等）
+│   ├── insert_ptx.py          # cuTile 原始插桩脚本（参考实现）
+│   ├── sub_block.py           # cuTile 原始 parser（参考实现）
+│   └── ptxas                  # 备用 ptxas 可执行文件
+│
+├── examples/
+│   └── test_instrument.py     # 端到端示例：matmul kernel 完整插桩流程
+│
+├── new_examples/              # 开发参考
+│   ├── sub_block.py           # ptx_parser.py 的对照实现
+│   ├── insert_ptx.py          # triton_instrument.py 的对照实现
+│   ├── config.ini             # 配置文件示例
+│   └── matmul.ptx             # cuTile 生成的参考插桩 PTX（用于验证）
+│
+└── output/                    # 运行时自动生成
+    ├── original.ptx           # Triton 编译出的原始 PTX（插桩前）
+    ├── instrumented.ptx       # 插桩后的 PTX
+    ├── raw.csv                # 原始时间戳数据（每线程每探针）
+    └── duration.csv           # 每探针耗时统计（ns）
 ```
 
-## Quick Start
+---
+
+## 各组件说明
+
+### `tri_ins/ptx_parser.py`
+
+把 PTX 文本解析成一组 `sub_block` 对象。
+
+**`sub_block` 的字段：**
+
+| 字段 | 含义 |
+|---|---|
+| `entry` / `exit` | 该 block 在 PTX 文件中的起止行号（1-based） |
+| `file` | `.loc <file> <line> <col>` 中的源文件索引 |
+| `loc` | `.loc` 指令中的源代码行号 |
+| `mma_lines` | 含 `mma` 指令的行号列表 |
+| `is_start` | 是否为 kernel 入口 `{` |
+| `is_end` | 是否为 `ret;` |
+| `is_sync` | 是否含有 `mbarrier.try_wait`（cuTile 异步等待块） |
+
+**切块规则：**
+- 遇到 `$L__BB` 标签 → 开启新 block
+- 遇到无条件/条件跳转 → 关闭当前 block
+- `bar.sync` 不触发切块，视为普通指令（Triton 特有行为）
+
+---
+
+### `tri_ins/triton_instrument.py`
+
+核心插桩引擎，主要对外接口是 `TritonInstrument`。
+
+**工作流程：**
+
+1. 用 `with TritonInstrument(...) as inst:` 上下文进入时，monkey-patch `CUDABackend.make_cubin`
+2. 用户在 `with` 块内正常调用 Triton kernel，触发编译
+3. 编译时 `make_cubin` 被拦截，原始 PTX 被截获，保存为 `output/original.ptx`
+4. 调用 `instrument_ptx()` 对 PTX 进行插桩：
+   - 用 `builder()` 把 PTX 切分成 sub_block 列表
+   - 过滤掉 `file != target_file` 的 block（排除非目标源文件）
+   - 在每对 (block_entry, block_exit) 插入 START/END 探针，分配 INDEX 编号（0-based）
+   - 在 PTX 头部插入寄存器声明（来自 `head.ptx`）
+5. 插桩后 PTX 保存为 `output/instrumented.ptx`，送回 ptxas 编译成 cubin
+6. Kernel 运行结束后，调用 `get_results()` 从 GPU buffer 读回时间戳并计算耗时
+
+**关键参数：**
+
+| 参数 | 含义 | 默认值 |
+|---|---|---|
+| `mode` | `"block"`（per-block 计时）或 `"mma"`（per-mma 计时） | — |
+| `t_start` / `t_end` | 采样线程的全局 thread ID 范围 | — |
+| `target_file` | 只对 `.loc` 来自该文件索引的 block 插桩 | `1` |
+| `output_dir` | PTX 文件保存目录 | `"output"` |
+
+---
+
+### PTX 探针模板（`Exist_Package/`）
+
+来自 cuTile 的现成探针，插桩时填入 INDEX 占位符后直接拼接进 PTX。
+
+- `head.ptx`：在 kernel 入口声明探针所需的额外寄存器（`%time_buf`、`%idx_buf` 等）
+- `entry.ptx`：START 探针，用 `%clock64` 读当前时钟，写入 `time_buf[INDEX * N_THREADS + tid]`
+- `exit.ptx`：END 探针，同上，写入 exit 时间戳
+
+---
+
+## 使用方法
+
+### 1. 在 kernel 里添加两个 buffer 参数
+
+```python
+@triton.jit
+def my_kernel(
+    x_ptr, n,
+    # 加在所有非 constexpr 参数的最后两个
+    time_buffer_ptr,
+    idx_buffer_ptr,
+    BLOCK: tl.constexpr,
+):
+    ...
+```
+
+### 2. 用 `TritonInstrument` 上下文运行
+
+`TritonInstrument` 是通用的，适用于任何 Triton kernel
 
 ```python
 from tri_ins import TritonInstrument
 
-with TritonInstrument(mode="block", t_start=0, t_end=127) as inst:
-    buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
-    my_kernel[grid](..., buf, ...)   # buffer_ptr = last non-constexpr param
+with TritonInstrument(mode="block", t_start=0, t_end=127, output_dir="output") as inst:
+    time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+    my_kernel[grid](..., time_buf, idx_buf, BLOCK=128)
     torch.cuda.synchronize()
-    inst.print_summary()
+    results = inst.get_results()
+    inst.print_summary(results)
+    inst.export_csv_raw("output/raw.csv", results)
+    inst.export_csv_duration("output/duration.csv", results)
 ```
+
+完整可运行示例见 `examples/test_instrument.py`，直接执行即可：
 
 ```bash
-# Run the full E2E test
-cd examples && python test_instrument.py
+python examples/test_instrument.py
 ```
 
----
+### 3. 查看输出文件
 
-# Triton Hidden Kernel Parameters: Global Scratch & Profile Scratch
-
-## Executive Summary
-
-Triton's compiler pipeline transparently injects **two hidden pointer arguments** into every compiled kernel function — **global scratch memory** and **profile scratch memory** — that are completely invisible in the user's Python `@triton.jit` function signature. These pointers are appended to the kernel's parameter list during the MLIR→LLVM IR lowering, and the Python-side launcher allocates the GPU memory and passes the pointers at launch time. The user never sees them.
-
----
-
-## 1. Architecture Overview
-
-Three hidden arguments are managed by the system (though shared memory is handled differently for kernels):
-
-| Constant | Value | Purpose |
-|---|---|---|
-| `kSharedMemoryOffset` | `-3` | Shared memory base (device functions only) |
-| `kGlobalScratchBufferOffset` | `-2` | Global scratch memory pointer |
-| `kProfileScratchBufferOffset` | `-1` | Profile scratch memory pointer |
-
-These constants are defined in `include/triton/Conversion/TritonGPUToLLVM/Utility.h` (lines ~323-335) and are used as negative offsets from `funcOp.getNumArguments()` to retrieve the hidden arguments.
-
-For **kernel functions** (public entry points), shared memory uses a global symbol rather than a function argument, but global scratch and profile scratch are still passed as explicit function arguments appended to the end of the parameter list.
-
----
-
-## 2. Compiler-Side: How Hidden Parameters Get Added
-
-### 2.1 The `GlobalScratchAllocOp` MLIR Operation
-
-Various compiler passes introduce `ttg.global_scratch_alloc` operations when they need device-side global memory workspace. Each alloc specifies:
-- `nbytes`: size in bytes
-- `alignment`: required alignment
-- `backend`: either `"default"` (compiler-internal) or `"proton"` (profiling)
-
-**Who creates these ops:**
-- **FP Sanitizer** (`FpSanitizer.cpp`): For floating-point instrumentation scratch buffers
-- **Concurrency Sanitizer** (ConSan): For buffer visibility tracking
-- **Proton Profiler**: For profiling data collection with `backend = "proton"`
-
-Example MLIR:
-```mlir
-%0 = ttg.global_scratch_alloc {alignment = 8 : i32, nbytes = 100 : i32} : !tt.ptr<i8>
-%1 = ttg.global_scratch_alloc {alignment = 128 : i32, nbytes = 128 : i32} : !tt.ptr<i8>
-```
-
-### 2.2 The Allocation Pass: `TritonGPUGlobalScratchAllocationPass`
-
-**File:** `lib/Conversion/TritonGPUToLLVM/GlobalScratchMemoryAllocation.cpp`
-
-This pass runs over the entire module and computes the total global scratch memory layout:
-
-1. **Recursive call-graph walk**: For each function, it first recurses into any called functions that don't yet have their scratch size computed.
-
-2. **Linear bump allocator**: Walks all operations in post-order. For each `GlobalScratchAllocOp` (with `backend == "default"` only), it rounds up the current offset to the requested alignment and assigns `ttg.global_scratch_memory_offset` to the op.
-
-3. **Propagation to module**: After processing all functions, the public kernel's scratch size and alignment are promoted to module-level attributes:
-   - `ttg.global_scratch_memory_size` — total bytes needed per CTA
-   - `ttg.global_scratch_memory_alignment` — maximum alignment required
-
-```cpp
-// From GlobalScratchMemoryAllocation.cpp
-static void allocateGMem(Operation *parentOp, ...) {
-  // ... for each GlobalScratchAllocOp with backend == "default":
-  offset = roundUp(offset, align);
-  op->setAttr("ttg.global_scratch_memory_offset",
-              builder.getI32IntegerAttr(offset));
-  offset += nbytes;
-}
-```
-
-After the pass, the MLIR module looks like:
-```mlir
-module attributes {
-  ttg.global_scratch_memory_alignment = 128 : i32,
-  ttg.global_scratch_memory_size = 256 : i32
-}
-```
-
-### 2.3 Profile Scratch: Separate Allocation Pass
-
-Profile scratch uses its own pass (`allocate-proton-global-scratch-buffer`) which handles `GlobalScratchAllocOp` with `backend = "proton"`. It produces:
-- `ttg.profile_scratch_memory_size`
-- `ttg.profile_scratch_memory_alignment`
-
-These are distinct from the global scratch attributes, allowing the two systems to be sized independently.
-
-### 2.4 `amendFuncOp()`: Injecting Hidden Arguments into Function Signatures
-
-**File:** `lib/Conversion/TritonGPUToLLVM/Utility.cpp` (lines ~1692-1745)
-
-This is the core function that physically modifies every Triton function's signature to include the hidden arguments:
-
-```cpp
-triton::FuncOp amendFuncOp(triton::FuncOp funcOp, ...) {
-  auto globalPtrTy = LLVM::LLVMPointerType::get(ctx, 1);   // address space 1 = global
-  auto profilePtrTy = LLVM::LLVMPointerType::get(ctx, 1);  // address space 1 = global
-
-  auto amendedInputTy = llvm::to_vector<4>(funcTy.getInputs());
-
-  if (!isKernel) {
-    amendedInputTy.push_back(sharedPtrTy);  // shared memory (device functions only)
-  }
-  amendedInputTy.push_back(globalPtrTy);    // always: global scratch
-  amendedInputTy.push_back(profilePtrTy);   // always: profile scratch
-
-  // Create new function type and update the function
-  auto amendedFuncTy = FunctionType::get(ctx, amendedInputTy, funcTy.getResults());
-}
-```
-
-**Key point**: `amendFuncOp` runs during the `convert-triton-gpu-to-llvm` pass. After it executes, a Triton function like:
-```mlir
-tt.func @my_kernel(%arg0: !tt.ptr<f32>)
-```
-becomes:
-```mlir
-llvm.func @my_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>)
-//                    ^user arg        ^global scratch      ^profile scratch
-```
-
-This is confirmed by the test `global_scratch_to_llvm.mlir`:
-```mlir
-// CHECK-LABEL: @global_scratch_alloc_warpgroup(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>)
-tt.func @global_scratch_alloc_warpgroup() {
-```
-A function with **zero** user arguments gets **two** hidden pointer arguments.
-
-### 2.5 `FuncOpConversion`: The LLVM Lowering Pattern
-
-**File:** `lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp` (lines 8-26)
-
-The critical documentation comment:
-
-```
-NOTE: [Additional Function Arguments]
-Triton patches additional arguments to the function signature to support
-(1) shared memory, (2) global scratch memory, and (3) profile scratch memory.
-To support use of shared memory and global scratch memory inside of a
-function, the caller allocates a single large block of the relevant memory
-and calls the function with these extra arguments at the end.
-Profile scratch memory is only used when the function is instrumented for
-profiling.
-
-For the kernel function itself, the shared memory base is a global symbol
-so no additional function argument is required but global scratch memory
-allocation is still passed in as the last argument. Though here the scratch
-memory is shared between all programs, so a linear offset based on the
-program id is required to get the local scratch base.
-```
-
-### 2.6 `getGlobalScratchPtr()`: How the Kernel Accesses Its Scratch
-
-**File:** `lib/Conversion/TritonGPUToLLVM/Utility.cpp` (lines ~1143-1199)
-
-This function is called whenever a `GlobalScratchAllocOp` is lowered to LLVM IR. It retrieves the hidden function argument and computes the per-CTA pointer:
-
-**For device functions (non-kernels):** Simply returns the argument directly (the caller already computed the correct base):
-```cpp
-auto gmemBase = funcOp.getArgument(funcOp.getNumArguments() + kGlobalScratchBufferOffset);
-return gep(ptrTy, i8_ty, gmemBase, allocOffset);
-```
-
-**For kernel functions:** Must compute a per-program offset because all CTAs share the same global buffer:
-```cpp
-// Compute linear CTA ID: linearId = z * (dimY * dimX) + y * dimX + x
-Value linearId = gridIdx[2];
-for (int k = 0; k < 2; ++k) {
-    linearId = add(gridIdx[1-k], mul(linearId, gridDim[1-k]));
-}
-// For multi-CTA clusters:
-if (numCTAs > 1) {
-    linearId = mul(linearId, i32_val(numCTAs));
-    linearId = add(linearId, targetInfo.getClusterCTAId(rewriter, loc));
-}
-// Final pointer: base + linearId * allocSize + allocOffset
-Value offset = mul(linearId, i32_val(allocSize));
-if (allocOffset) offset = add(offset, allocOffset);
-return gep(LLVMPointerType::get(ctx, 1), i8_ty, gmemBase, offset);
-```
-
-This means the **total GPU allocation** for global scratch is:
-$$\text{total} = \text{global\_scratch\_size} \times \text{gridX} \times \text{gridY} \times \text{gridZ} \times \text{numCTAs}$$
-
-### 2.7 `getProfileScratchPtr()`: Profile Scratch Access
-
-**File:** `lib/Conversion/TritonGPUToLLVM/Utility.cpp` (lines ~1201-1209)
-
-Much simpler — just reads the last function argument:
-```cpp
-Value getProfileScratchPtr(..., FunctionOpInterface funcOp) {
-  return funcOp.getArgument(funcOp.getNumArguments() + kProfileScratchBufferOffset);
-}
-```
-
-Note the FIXME comment: *"This is broken when we have device functions, we need to implement proper calling convention"*.
-
-### 2.8 `GlobalScratchAllocOpConversion`: Lowering to LLVM GEP
-
-**File:** `lib/Conversion/TritonGPUToLLVM/MemoryOpToLLVM.cpp` (lines ~175-189)
-
-Each `ttg.global_scratch_alloc` op is converted to an LLVM GEP instruction:
-```cpp
-LogicalResult matchAndRewrite(GlobalScratchAllocOp op, ...) {
-    auto opOffset = op->getAttr("ttg.global_scratch_memory_offset");
-    Value ptr = LLVM::getGlobalScratchPtr(loc, rewriter, *targetInfo, funcOp,
-                                           b.i32_val(opOffset));
-    rewriter.replaceOp(op, ptr);
-}
-```
-
-### 2.9 Call Propagation: `CallOpConversion`
-
-**File:** `lib/Conversion/TritonGPUToLLVM/ControlFlowOpToLLVM.cpp` (line ~100+)
-
-When converting `tt.call` to LLVM, the scratch pointers are automatically forwarded:
-```cpp
-// Append hidden args to the promoted operands
-promotedOperands.push_back(LLVM::getGlobalScratchPtr(...));
-promotedOperands.push_back(LLVM::getProfileScratchPtr(...));
-```
-
----
-
-## 3. Python-Side: Metadata Flow and Kernel Launch
-
-### 3.1 Compilation: Metadata Extraction
-
-**File:** `python/triton/compiler/compiler.py`
-
-After MLIR compilation, the module-level attributes (`ttg.global_scratch_memory_size`, `ttg.profile_scratch_memory_size`) are extracted into the kernel's metadata object. This metadata is serialized and cached alongside the compiled binary (cubin/hsaco).
-
-Key metadata fields:
-- `metadata.global_scratch_size` — bytes per CTA for global scratch
-- `metadata.profile_scratch_size` — bytes per CTA for profile scratch
-- `metadata.shared` — shared memory size
-
-### 3.2 `CompiledKernel._init_handles()`: Loading the Binary
-
-**File:** `python/triton/compiler/compiler.py` (line ~465+)
-
-```python
-def _init_handles(self):
-    # Loads the compiled binary (cubin) onto the GPU
-    self.module, self.function, ... = driver.active.utils.load_binary(
-        self.name, self.kernel, self.metadata.shared, device)
-```
-
-### 3.3 `JITFunction.run()`: The Kernel Launch Path
-
-**File:** `python/triton/runtime/jit.py` (lines ~708-763)
-
-```python
-def run(self, *args, grid, warmup, **kwargs):
-    # ... argument binding, specialization, compilation ...
-
-    # Launch:
-    kernel.run(grid_0, grid_1, grid_2, stream,
-               kernel.function, kernel.packed_metadata,
-               launch_metadata,
-               knobs.runtime.launch_enter_hook,
-               knobs.runtime.launch_exit_hook,
-               *bound_args.values())
-```
-
-The `kernel.run` here is a C-extension function generated by `make_launcher`. The C code:
-1. Parses all user arguments from the Python call
-2. Reads `global_scratch_size` and `profile_scratch_size` from the packed metadata
-3. If `global_scratch_size > 0`: calls the user-registered allocator (`triton.set_allocator(fn)`) to allocate `global_scratch_size * grid_x * grid_y * grid_z` bytes of GPU memory
-4. If `profile_scratch_size > 0`: calls the profile allocator (`triton.set_profile_allocator(fn)`) similarly
-5. Appends the resulting `CUdeviceptr` values to the kernel parameter array
-6. Calls `cuLaunchKernel` with all parameters (user args + global_scratch_ptr + profile_scratch_ptr)
-
-### 3.4 The Allocator Callbacks
-
-**File:** `python/triton/runtime/_allocation.py`
-
-Two separate allocator registries:
-
-```python
-# For global scratch (fpsan, consan, etc.)
-_allocator: ContextVar[Allocator] = ContextVar("_allocator", default=_NULL_ALLOCATOR)
-
-def set_allocator(allocator: Allocator) -> None:
-    _allocator.set(allocator)
-
-# For profile scratch (Proton)
-_profile_allocator = _AllocatorWrapper(_NULL_ALLOCATOR)
-
-def set_profile_allocator(allocator: Optional[Allocator]) -> None:
-    """Called before kernel launch for kernels that require
-    additional global memory workspace."""
-    _profile_allocator.set(allocator)
-```
-
-User code must register an allocator if using features that need global scratch:
-```python
-def my_allocator(size: int, alignment: int, stream: int):
-    return torch.empty(size, device="cuda", dtype=torch.int8)
-
-triton.set_allocator(my_allocator)
-```
-
-### 3.5 AOT Compilation: Explicit Handling
-
-**File:** `python/triton/tools/compile.py` (lines ~143-199)
-
-The AOT compiler explicitly accounts for the two hidden arguments:
-```python
-# Check if scratch is needed (not yet supported for AOT)
-if metadata.global_scratch_size > 0:
-    raise RuntimeError("AOT compiling kernels with global scratch "
-                       "requirements is not yet implemented")
-if metadata.profile_scratch_size > 0:
-    raise RuntimeError("AOT compiling kernels with profile scratch "
-                       "requirements is not yet implemented")
-
-# In the C stub template:
-"arg_pointers": [...user_args..., "&global_scratch", "&profile_scratch"],
-"num_args": len(user_args) + 2,  # +2 for global and profile scratch
-```
-
----
-
-## 4. End-to-End Flow Diagram
-
-```
-User writes:                    @triton.jit
-                                def kernel(x_ptr, n):
-                                    ...
-
-                                         │
-                                         ▼
-1. MLIR Passes              ttg.global_scratch_alloc {nbytes=100, alignment=8}
-   (fpsan/consan/proton)     ttg.global_scratch_alloc {nbytes=128, alignment=128,
-                                                       backend="proton"}
-                                         │
-                                         ▼
-2. Allocation Pass           ttg.global_scratch_memory_size = 100 (module attr)
-   (GlobalScratchAllocation) ttg.global_scratch_memory_offset = 0 (per-op attr)
-                             ttg.profile_scratch_memory_size = 128 (module attr)
-                                         │
-                                         ▼
-3. FuncOp → LLVM             amendFuncOp() adds 2 ptr<1> args:
-   (FuncOpConversion)        @kernel(%x: ptr, %n: i32,
-                                     %global: ptr<1>, %profile: ptr<1>)
-                                         │
-                                         ▼
-4. Op Lowering               GlobalScratchAllocOp → getGlobalScratchPtr()
-   (MemoryOpToLLVM)          → GEP from %global with per-CTA offset
-                                         │
-                                         ▼
-5. PTX Codegen               .param .u64 kernel_param_0   // x_ptr
-                             .param .u32 kernel_param_1   // n
-                             .param .u64 kernel_param_2   // global_scratch  ← HIDDEN
-                             .param .u64 kernel_param_3   // profile_scratch ← HIDDEN
-                                         │
-                                         ▼
-6. Python Metadata           metadata.global_scratch_size = 100
-                             metadata.profile_scratch_size = 128
-                                         │
-                                         ▼
-7. Kernel Launch             allocator(100 * grid_total, 8, stream) → CUdeviceptr
-   (C extension)             profile_alloc(128 * grid_total, 128, stream) → CUdeviceptr
-                             cuLaunchKernel(...,
-                                params=[x, n, scratch, profile])
-```
-
----
-
-## 5. Extensibility: Adding a Custom Hidden Buffer
-
-The mechanism is architecturally clean and could be extended for custom data-collection buffers. The steps would be:
-
-1. **Add a new constant** in `Utility.h`:
-   ```cpp
-   constexpr int kCustomBufferOffset = -4;
-   // Shift existing: kSharedMemoryOffset from -3 to -4, etc.
-   ```
-
-2. **Extend `amendFuncOp()`** to push another `ptr<1>` argument.
-
-3. **Create an allocation pass** (similar to `TritonGPUGlobalScratchAllocationPass`) that walks operations and computes sizes, setting module-level attributes like `ttg.custom_buffer_size`.
-
-4. **Add a `getCustomBufferPtr()` function** following the pattern of `getGlobalScratchPtr()` (with or without per-CTA offset calculation depending on use case).
-
-5. **On the Python side**: Add a new allocator callback (like `set_allocator` / `set_profile_allocator`) and extend the C launcher to read the new metadata field and allocate/pass the buffer.
-
-6. **Extend `CallOpConversion`** to forward the new pointer to called functions.
-
-The profile scratch system (`backend = "proton"`) is itself already a proof-of-concept of this extensibility — it was added after global scratch using the exact same pattern but with separate attributes, a separate allocation pass, and a separate Python-side allocator.
-
----
-
-## 6. Key Source Files Reference
-
-| File | Purpose |
+| 文件 | 内容 |
 |---|---|
-| `lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp` | `FuncOpConversion` + NOTE comment |
-| `lib/Conversion/TritonGPUToLLVM/Utility.cpp` | `amendFuncOp`, `getGlobalScratchPtr`, `getProfileScratchPtr` |
-| `include/triton/Conversion/TritonGPUToLLVM/Utility.h` | Constants: `kProfileScratchBufferOffset`, `kGlobalScratchBufferOffset`, `kSharedMemoryOffset` |
-| `lib/Conversion/TritonGPUToLLVM/GlobalScratchMemoryAllocation.cpp` | `TritonGPUGlobalScratchAllocationPass`, `allocateGMem()` |
-| `lib/Conversion/TritonGPUToLLVM/MemoryOpToLLVM.cpp` | `GlobalScratchAllocOpConversion` |
-| `lib/Conversion/TritonGPUToLLVM/ControlFlowOpToLLVM.cpp` | `CallOpConversion` (forwards scratch ptrs) |
-| `lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp` | Creates `GlobalScratchAllocOp` for FP sanitization |
-| `python/triton/compiler/compiler.py` | `CompiledKernel`, `_init_handles()`, metadata extraction |
-| `python/triton/runtime/jit.py` | `JITFunction.run()` — kernel launch path |
-| `python/triton/runtime/_allocation.py` | `set_allocator()`, `set_profile_allocator()` |
-| `python/triton/tools/compile.py` | AOT compilation handling (+2 for scratch args) |
-| `python/triton/knobs.py` | `proton_knobs.profile_buffer_size` (64 MB default) |
-| `test/TritonGPU/global_scratch_alloc.mlir` | Tests for allocation pass |
-| `test/TritonGPU/global_scratch_to_llvm.mlir` | Tests for LLVM lowering (shows hidden args) |
-| `test/Proton/allocate_global_scratch_buffer.mlir` | Tests for Proton profile scratch allocation |
+| `output/original.ptx` | 插桩前的原始 Triton PTX |
+| `output/instrumented.ptx` | 插桩后的 PTX，可用于人工核查探针位置 |
+| `output/raw.csv` | 每个线程在每个探针处的原始 `clock64` 时间戳 |
+| `output/duration.csv` | 每个探针的 START→END 耗时（纳秒），按 thread 列出 |
+
+---
+
