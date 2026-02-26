@@ -292,6 +292,7 @@ class TritonInstrument:
                  n_probes_estimate: int = 256,
                  raw_csv: str = "raw.csv",
                  trace_json: str = "trace.json",
+                 loc_map_json: str = "loc_map.json",
                  dump_ptx: bool = True):
         self.mode = mode
         self.t_start = t_start
@@ -301,6 +302,7 @@ class TritonInstrument:
         self.n_probes_estimate = n_probes_estimate
         self.raw_csv = raw_csv
         self.trace_json = trace_json
+        self.loc_map_json = loc_map_json
         self.dump_ptx = dump_ptx
         self._original_make_cubin = None
         self._loc_map: Dict[int, int] = {}
@@ -334,6 +336,7 @@ class TritonInstrument:
             output_dir=out_sec.get('output_dir', 'output'),
             raw_csv=out_sec.get('raw_csv', 'raw.csv'),
             trace_json=out_sec.get('trace_json', 'trace.json'),
+            loc_map_json=out_sec.get('loc_map', 'loc_map.json'),
             dump_ptx=out_sec.getboolean('dump_ptx', True),
         )
 
@@ -417,6 +420,13 @@ class TritonInstrument:
                     with open(inst_path, 'w') as f:
                         f.write(modified_ptx)
                     print(f"[Instrument] Saved instrumented PTX -> {inst_path}")
+
+                # Save loc→probe mapping as JSON
+                if self.output_dir:
+                    loc_path = os.path.join(self.output_dir, self.loc_map_json)
+                    with open(loc_path, 'w') as f:
+                        json.dump(loc_map, f, indent=2)
+                    print(f"[Instrument] Saved loc map -> {loc_path}")
 
                 src = modified_ptx
             except Exception as e:

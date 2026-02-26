@@ -14,9 +14,7 @@
 
 * [X] 修改输出的raw的格式
 * [X] _dummy的部分修改为16和64位
-
-* [ ] chrome trace 格式，使用perfetto查看
+* [X] chrome trace 格式，使用perfetto查看
 * [X] 添加一个配置文件用来控制具体的py设置
-
 * [ ] 单独加一个loc到probe 编号的映射
 * [ ] 加入无用桩子的消除，合并
