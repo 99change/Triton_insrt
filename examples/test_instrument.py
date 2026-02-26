@@ -82,36 +82,12 @@ def main():
     # grid = (4*2,) = (8,) blocks, each with 128 threads
     # Total threads = 8 * 128 = 1024, global thread IDs [0, 1023]
 
-    print("=" * 70)
-    print("Phase 1: Correctness check (without instrumentation)")
-    print("=" * 70)
-
-    # Run uninstrumented kernel to get reference output
-    c_ref = torch.empty((M, N), device="cuda", dtype=torch.float16)
-    _dummy = torch.zeros(1, dtype=torch.int64, device="cuda")
-    matmul_kernel[grid](
-        a, b, c_ref,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c_ref.stride(0), c_ref.stride(1),
-        _dummy,  # dummy time_buffer
-        _dummy,  # dummy idx_buffer
-        BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_N=BLOCK_N,
-        BLOCK_SIZE_K=BLOCK_K, GROUP_SIZE_M=8,
-    )
-    torch.cuda.synchronize()
+    # Ground truth from PyTorch
     torch_ref = torch.matmul(a, b)
-    print(f"Max diff vs torch.matmul: {(c_ref - torch_ref).abs().max().item():.6f}")
 
-    print("\n" + "=" * 70)
-    print("Phase 2: Instrumented run")
     print("=" * 70)
-
-    # Force recompilation: clear in-memory cache AND disk cache bypass
-    os.environ["TRITON_ALWAYS_COMPILE"] = "1"
-    device = torch.cuda.current_device()
-    matmul_kernel.device_caches[device][0].clear()  # clear in-memory kernel cache
+    print("Instrumented run")
+    print("=" * 70)
 
     output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
     os.makedirs(output_dir, exist_ok=True)
@@ -120,8 +96,11 @@ def main():
     with TritonInstrument(mode="block", t_start=0, t_end=127,
                           output_dir=output_dir) as inst:
 
-        # Allocate both buffers (generous estimate: 128 probes, 128 threads)
-        time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+        # Allocate both buffers.
+        # NOTE: n_probes_estimate must account for loop iterations!
+        # 75 probes in PTX, but 14 are inside the K-loop (8 iters),
+        # so actual firings = 61 + 14*8 = 173 per thread. Use 256 for safety.
+        time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=256, n_threads=128)
 
         # Launch instrumented kernel
         c_inst = torch.empty((M, N), device="cuda", dtype=torch.float16)
@@ -138,9 +117,9 @@ def main():
         )
         torch.cuda.synchronize()
 
-        # Check correctness: instrumented kernel should produce same output
-        max_diff = (c_inst - c_ref).abs().max().item()
-        print(f"\nInstrumented vs reference max diff: {max_diff:.6f}")
+        # Check correctness against torch.matmul
+        max_diff = (c_inst.float() - torch_ref.float()).abs().max().item()
+        print(f"\nInstrumented vs torch.matmul max diff: {max_diff:.6f}")
 
         # Print timing results
         results = inst.get_results()
@@ -149,9 +128,6 @@ def main():
         # Export CSV results
         inst.export_csv_raw(os.path.join(output_dir, "raw.csv"), results)
         inst.export_csv_duration(os.path.join(output_dir, "duration.csv"), results)
-
-    # Unset to avoid affecting other compilations
-    os.environ.pop("TRITON_ALWAYS_COMPILE", None)
 
 
 if __name__ == "__main__":
