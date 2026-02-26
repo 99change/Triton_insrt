@@ -675,4 +675,106 @@ class TritonInstrument:
         print(f"[Instrument] Chrome trace saved: {path}  "
               f"({len(rows)} probes x {n_threads} threads)")
 
+    # ------------------------------------------------------------------ #
+    #  Sanitizer: dead-probe elimination + merge
+    # ------------------------------------------------------------------ #
+
+    def _build_raw_array(self, results: Optional[Dict] = None) -> np.ndarray:
+        """Build the raw numpy array [n_probes, n_threads * 4] from results."""
+        if results is None:
+            results = self.get_results()
+        n_threads = self._n_threads or (self.t_end - self.t_start + 1)
+        rows = []
+        for probe_id, data in sorted(results.items()):
+            row = []
+            for t in range(n_threads):
+                row += [
+                    data['start_idx'][t].item(),
+                    data['end_idx'][t].item(),
+                    data['start_time'][t].item(),
+                    data['end_time'][t].item(),
+                ]
+            rows.append(row)
+        return np.array(rows, dtype=np.int64)
+
+    @staticmethod
+    def _clear_dead(data: np.ndarray) -> Tuple[List[int], List[int]]:
+        """Find probes that were actually executed (non-dead)."""
+        start_idx = data[:, ::4]
+        end_idx = data[:, 1::4]
+        active_start = sorted(set(np.unique(start_idx).tolist()))
+        active_end = sorted(set(np.unique(end_idx).tolist()))
+        return active_start, active_end
+
+    @staticmethod
+    def _get_connections(data: np.ndarray) -> set:
+        """Find (end_idx → next start_idx) transitions across consecutive probes."""
+        start_index = data[:, ::4]
+        end_index = data[:, 1::4]
+        # Only count transitions where a chain of non-zero start_idx continues
+        valid = np.cumprod(start_index[1:] != 0, axis=0).astype(bool)
+        from_nodes = end_index[:-1][valid]
+        to_nodes = start_index[1:][valid]
+        return set(zip(from_nodes.tolist(), to_nodes.tolist()))
+
+    @staticmethod
+    def _get_merge_list(connections: set, loc_map: Dict[int, int]) -> List[Tuple[int, int]]:
+        """Find probe pairs that can be merged (unique 1:1 connection, same loc)."""
+        merged = []
+        for from_idx, to_idx in connections:
+            is_unique_from = sum(1 for c in connections if c[0] == from_idx) == 1
+            is_unique_to = sum(1 for c in connections if c[1] == to_idx) == 1
+            if is_unique_from and is_unique_to:
+                from_loc = loc_map.get(from_idx, None)
+                to_loc = loc_map.get(to_idx, None)
+                if from_loc is not None and from_loc == to_loc:
+                    merged.append((from_idx, to_idx))
+        return merged
+
+    def sanitize(self, path: str, results: Optional[Dict] = None,
+                 dead: bool = True, merge: bool = True):
+        """
+        Perform dead-probe elimination and/or merge, output active probe list.
+
+        Args:
+            path:    Output JSON path for active probe lists
+            results: Pre-computed results dict (or None to compute)
+            dead:    Enable dead-probe elimination
+            merge:   Enable adjacent-probe merging
+        """
+        if results is None:
+            results = self.get_results()
+
+        data = self._build_raw_array(results)
+        loc_map = self._loc_map
+        n_probes = self._n_probes
+
+        active_start = list(range(n_probes))
+        active_end = list(range(n_probes))
+
+        if dead:
+            active_start, active_end = self._clear_dead(data)
+            n_dead_start = n_probes - len(active_start)
+            n_dead_end = n_probes - len(active_end)
+            print(f"[Sanitizer] Dead elimination: removed {n_dead_start} start / "
+                  f"{n_dead_end} end probes")
+
+        if merge:
+            connections = self._get_connections(data)
+            merge_list = self._get_merge_list(connections, loc_map)
+            eliminated_start = {c[1] for c in merge_list}
+            eliminated_end = {c[0] for c in merge_list}
+            active_start = [x for x in active_start if x not in eliminated_start]
+            active_end = [x for x in active_end if x not in eliminated_end]
+            print(f"[Sanitizer] Merge: {len(merge_list)} probe pairs merged")
+
+        json_data = {
+            'active_start': {'list': active_start},
+            'active_end': {'list': active_end}
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=2)
+        print(f"[Sanitizer] Active probes saved: {path}  "
+              f"({len(active_start)} start / {len(active_end)} end)")
+
 
