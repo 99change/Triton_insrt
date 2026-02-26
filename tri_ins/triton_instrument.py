@@ -32,14 +32,21 @@ Usage:
 import os
 import re
 import json
+import configparser
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
 from .ptx_parser import sub_block, builder
 
-# ---- Paths to PTX probe templates (from Exist_Package) ----
+# Default config path (alongside this module)
+DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+
+# ---- Paths to PTX probe templates ----
 PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           '..', 'Exist_Package')
+                           '..', 'template')
 
 
 def _load_template(name: str) -> List[str]:
@@ -281,12 +288,20 @@ class TritonInstrument:
 
     def __init__(self, mode: str = "block", t_start: int = 0, t_end: int = 127,
                  target_file: int = 1,
-                 output_dir: Optional[str] = "output"):
+                 output_dir: Optional[str] = "output",
+                 n_probes_estimate: int = 256,
+                 raw_csv: str = "raw.csv",
+                 trace_json: str = "trace.json",
+                 dump_ptx: bool = True):
         self.mode = mode
         self.t_start = t_start
         self.t_end = t_end
         self.target_file = target_file
         self.output_dir = output_dir
+        self.n_probes_estimate = n_probes_estimate
+        self.raw_csv = raw_csv
+        self.trace_json = trace_json
+        self.dump_ptx = dump_ptx
         self._original_make_cubin = None
         self._loc_map: Dict[int, int] = {}
         self._n_probes: int = 0
@@ -294,6 +309,33 @@ class TritonInstrument:
         self._time_buffer: Optional[torch.Tensor] = None
         self._idx_buffer: Optional[torch.Tensor] = None
         self._active: bool = False
+
+    @classmethod
+    def from_config(cls, config_path: str = None) -> 'TritonInstrument':
+        """
+        Create a TritonInstrument from an INI config file.
+
+        If config_path is None, uses tri_ins/config.ini.
+        """
+        if config_path is None:
+            config_path = DEFAULT_CONFIG
+        cfg = configparser.ConfigParser()
+        cfg.read(config_path)
+
+        inst_sec = cfg['instrument']
+        out_sec = cfg['output']
+
+        return cls(
+            mode=inst_sec.get('mode', 'block'),
+            t_start=inst_sec.getint('t_start', 0),
+            t_end=inst_sec.getint('t_end', 127),
+            target_file=inst_sec.getint('target_file', 1),
+            n_probes_estimate=inst_sec.getint('n_probes_estimate', 256),
+            output_dir=out_sec.get('output_dir', 'output'),
+            raw_csv=out_sec.get('raw_csv', 'raw.csv'),
+            trace_json=out_sec.get('trace_json', 'trace.json'),
+            dump_ptx=out_sec.getboolean('dump_ptx', True),
+        )
 
     @property
     def time_buffer(self) -> Optional[torch.Tensor]:
@@ -350,8 +392,8 @@ class TritonInstrument:
         """Intercept PTX, insert probes, then compile to cubin."""
         if self._active:
             try:
-                # Always save original PTX when output_dir is set
-                if self.output_dir:
+                # Save original PTX when dump_ptx is enabled
+                if self.output_dir and self.dump_ptx:
                     os.makedirs(self.output_dir, exist_ok=True)
                     orig_path = os.path.join(self.output_dir, "original.ptx")
                     with open(orig_path, 'w') as f:
@@ -369,8 +411,8 @@ class TritonInstrument:
                 print(f"[Instrument] Thread range: [{self.t_start}, {self.t_end}]")
                 print(f"[Instrument] Loc map: {json.dumps(loc_map, indent=2)}")
 
-                # Always save instrumented PTX when output_dir is set
-                if self.output_dir:
+                # Save instrumented PTX when dump_ptx is enabled
+                if self.output_dir and self.dump_ptx:
                     inst_path = os.path.join(self.output_dir, "instrumented.ptx")
                     with open(inst_path, 'w') as f:
                         f.write(modified_ptx)
@@ -482,24 +524,24 @@ class TritonInstrument:
         """
         Export raw per-probe per-thread data as CSV.
 
-        Matches cuTile matmul.py's buffer_list_raw format:
+        Format:
           rows    = probes (one row per probe)
-          columns = for each thread: [start_idx, end_idx, start_time, end_time]
+          columns = for each thread (1-based): start_idx, end_idx, start_time, end_time
 
-        Header: probe_id, loc, t0_start_idx, t0_end_idx, t0_start_time, t0_end_time, ...
+        Header: t1_start_idx, t1_end_idx, t1_start_time, t1_end_time, t2_..., ...
         """
         if results is None:
             results = self.get_results()
         n_threads = self._n_threads or (self.t_end - self.t_start + 1)
 
-        header = ['probe_id', 'loc']
+        header = []
         for t in range(n_threads):
             header += [f't{t}_start_idx', f't{t}_end_idx',
                        f't{t}_start_time', f't{t}_end_time']
 
         rows = []
         for probe_id, data in sorted(results.items()):
-            row = [probe_id, data['loc']]
+            row = []
             for t in range(n_threads):
                 row += [
                     data['start_idx'][t].item(),
@@ -514,44 +556,113 @@ class TritonInstrument:
                    header=','.join(header), comments='')
         print(f"[Instrument] Raw CSV saved: {path}  ({len(rows)} probes x {n_threads} threads)")
 
-    def export_csv_duration(self, path: str, results: Optional[Dict] = None):
+    def export_chrome_trace(self, path: str, results: Optional[Dict] = None,
+                            chunk_size: int = 4096, workers: int = 16,
+                            queue_size: int = 16):
         """
-        Export per-thread timing summary as CSV.
+        Export probe data as Chrome Trace Event JSON.
 
-        Output format (matches cuTile's duration CSV, transposed to thread-centric):
-          rows    = threads  (index = thread_id within the probed range)
-          columns = per-probe duration [cycles] + total_cycles
-
-        Header: thread_id, probe_1_loc<N>, probe_2_loc<N>, ..., total_cycles
+        Output can be opened in chrome://tracing or https://ui.perfetto.dev.
+        Each probe becomes an "X" (complete) event with:
+          - ts   = start_time (clock cycles)
+          - dur  = end_time - start_time
+          - tid  = thread index within probed range
+          - pid  = 0
+          - name = "Line <loc>"  (Python source line from .loc mapping)
         """
         if results is None:
             results = self.get_results()
         n_threads = self._n_threads or (self.t_end - self.t_start + 1)
-        sorted_probes = sorted(results.keys())
+        loc_map = self._loc_map
 
-        header = ['thread_id']
-        for pid in sorted_probes:
-            header.append(f'probe_{pid}_loc{results[pid]["loc"]}')
-        header.append('total_cycles')
-
+        # Build raw data array: [n_probes, n_threads * 4]
         rows = []
-        for t in range(n_threads):
-            row = [self.t_start + t]
-            total = 0
-            for pid in sorted_probes:
-                d = results[pid]['duration'][t].item()
-                # negative values mean exit probe wasn't reached (branch taken)
-                d = max(d, 0)
-                row.append(d)
-                total += d
-            row.append(total)
+        for probe_id, data in sorted(results.items()):
+            row = []
+            for t in range(n_threads):
+                row += [
+                    data['start_idx'][t].item(),
+                    data['end_idx'][t].item(),
+                    data['start_time'][t].item(),
+                    data['end_time'][t].item(),
+                ]
             rows.append(row)
+        data_arr = np.array(rows, dtype=np.int64)
 
-        arr = np.array(rows, dtype=np.int64)
-        np.savetxt(path, arr, delimiter=',', fmt='%d',
-                   header=','.join(header), comments='')
-        print(f"[Instrument] Duration CSV saved: {path}  ({n_threads} threads x {len(sorted_probes)} probes)")
-        if len(rows) > 0:
-            totals = arr[:, -1]
-            print(f"[Instrument] Total cycles — mean: {totals.mean():.0f}  "
-                  f"min: {totals.min()}  max: {totals.max()}")
+        if data_arr.size == 0:
+            with open(path, 'w') as f:
+                json.dump({"schemaVersion": 1, "traceEvents": [],
+                           "displayTimeUnit": "ns"}, f)
+            print(f"[Instrument] Chrome trace saved: {path}  (empty)")
+            return
+
+        q: "queue.Queue[object]" = queue.Queue(maxsize=queue_size)
+
+        def worker(start_row: int, end_row: int):
+            parts = []
+            for row in data_arr[start_row:end_row]:
+                for i in range(n_threads):
+                    start_idx  = int(row[i * 4])
+                    end_idx    = int(row[i * 4 + 1])
+                    start_time = int(row[i * 4 + 2])
+                    end_time   = int(row[i * 4 + 3])
+
+                    if start_time == 0:
+                        continue
+
+                    duration = end_time - start_time
+                    loc = loc_map.get(start_idx, None)
+                    name = f"Line {loc}" if loc is not None else f"Probe {start_idx}"
+
+                    event = {
+                        "name": name,
+                        "cat": name,
+                        "ph": "X",
+                        "ts": start_time,
+                        "dur": duration,
+                        "pid": 0,
+                        "tid": i,
+                        "args": {
+                            "start_index": start_idx,
+                            "end_index": end_idx
+                        }
+                    }
+                    parts.append(json.dumps(event, ensure_ascii=False))
+
+            if parts:
+                q.put(',\n'.join(parts))
+
+        def writer_fn():
+            first = True
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('{"schemaVersion": 1, "traceEvents": [\n')
+                while True:
+                    item = q.get()
+                    if item is None:
+                        break
+                    if not first:
+                        f.write(',\n')
+                    f.write(item)
+                    first = False
+                f.write('\n], "displayTimeUnit": "ns"}')
+
+        total_rows = data_arr.shape[0]
+
+        writer = threading.Thread(target=writer_fn, daemon=True)
+        writer.start()
+
+        ranges = [(s, min(s + chunk_size, total_rows))
+                  for s in range(0, total_rows, chunk_size)]
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(worker, s, e) for s, e in ranges]
+            for fut in futures:
+                fut.result()
+
+        q.put(None)
+        writer.join()
+
+        print(f"[Instrument] Chrome trace saved: {path}  "
+              f"({len(rows)} probes x {n_threads} threads)")
+
+

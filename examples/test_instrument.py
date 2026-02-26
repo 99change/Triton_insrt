@@ -89,18 +89,19 @@ def main():
     print("Instrumented run")
     print("=" * 70)
 
-    output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
+    # Load settings from tri_ins/config.ini
+    inst = TritonInstrument.from_config()
+
+    output_dir = os.path.abspath(inst.output_dir)
     os.makedirs(output_dir, exist_ok=True)
+    # Update output_dir to absolute path so PTX saves go to the right place
+    inst.output_dir = output_dir
 
-    # Probe the first block's threads: global_tid 0..127
-    with TritonInstrument(mode="block", t_start=0, t_end=127,
-                          output_dir=output_dir) as inst:
+    n_threads = inst.t_end - inst.t_start + 1
 
-        # Allocate both buffers.
-        # NOTE: n_probes_estimate must account for loop iterations!
-        # 75 probes in PTX, but 14 are inside the K-loop (8 iters),
-        # so actual firings = 61 + 14*8 = 173 per thread. Use 256 for safety.
-        time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=256, n_threads=128)
+    with inst:
+        time_buf, idx_buf = inst.allocate_buffer(
+            n_probes_estimate=inst.n_probes_estimate, n_threads=n_threads)
 
         # Launch instrumented kernel
         c_inst = torch.empty((M, N), device="cuda", dtype=torch.float16)
@@ -126,8 +127,10 @@ def main():
         inst.print_summary(results)
 
         # Export CSV results
-        inst.export_csv_raw(os.path.join(output_dir, "raw.csv"), results)
-        inst.export_csv_duration(os.path.join(output_dir, "duration.csv"), results)
+        inst.export_csv_raw(os.path.join(output_dir, inst.raw_csv), results)
+
+        # Export Chrome trace JSON
+        inst.export_chrome_trace(os.path.join(output_dir, inst.trace_json), results)
 
 
 if __name__ == "__main__":
