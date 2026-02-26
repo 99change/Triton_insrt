@@ -10,9 +10,12 @@ performs dead elimination and/or merge, outputs active_probes.json.
 
 import os
 import json
+import queue
+import threading
 import configparser
 import numpy as np
 from typing import Dict, List, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 # Default config path (alongside this module)
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
@@ -52,7 +55,99 @@ def get_merge_list(connections: Set[Tuple[int, int]],
     return merged
 
 
+def export_chrome_trace(path: str, data: np.ndarray,
+                        active_start: List[int], active_end: List[int],
+                        loc_map: Dict[int, int],
+                        chunk_size: int = 4096, workers: int = 16,
+                        queue_size: int = 16):
+    """
+    Export sanitized probe data as Chrome Trace Event JSON.
+
+    Pairs active_start[i] with active_end[i] positionally:
+      - ts  = start_time from the start-probe row
+      - dur = end_time from the end-probe row  -  start_time
+    """
+    n_threads = data.shape[1] // 4
+    n_pairs = min(len(active_start), len(active_end))
+
+    if n_pairs == 0:
+        with open(path, 'w') as f:
+            json.dump({"schemaVersion": 1, "traceEvents": [],
+                       "displayTimeUnit": "ns"}, f)
+        print(f"[Sanitizer] Chrome trace saved: {path}  (empty)")
+        return
+
+    q: "queue.Queue[object]" = queue.Queue(maxsize=queue_size)
+
+    def worker(pair_start: int, pair_end: int):
+        parts = []
+        for p in range(pair_start, pair_end):
+            s_row = data[active_start[p]]
+            e_row = data[active_end[p]]
+            for t in range(n_threads):
+                start_idx  = int(s_row[t * 4])
+                end_idx    = int(e_row[t * 4 + 1])
+                start_time = int(s_row[t * 4 + 2])
+                end_time   = int(e_row[t * 4 + 3])
+
+                if start_time == 0:
+                    continue
+
+                duration = end_time - start_time
+                loc = loc_map.get(start_idx, None)
+                name = f"Line {loc}" if loc is not None else f"Probe {start_idx}"
+
+                event = {
+                    "name": name,
+                    "cat": name,
+                    "ph": "X",
+                    "ts": start_time,
+                    "dur": duration,
+                    "pid": 0,
+                    "tid": t,
+                    "args": {
+                        "start_index": start_idx,
+                        "end_index": end_idx
+                    }
+                }
+                parts.append(json.dumps(event, ensure_ascii=False))
+        if parts:
+            q.put(',\n'.join(parts))
+
+    def writer_fn():
+        first = True
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('{"schemaVersion": 1, "traceEvents": [\n')
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                if not first:
+                    f.write(',\n')
+                f.write(item)
+                first = False
+            f.write('\n], "displayTimeUnit": "ns"}')
+
+    writer = threading.Thread(target=writer_fn, daemon=True)
+    writer.start()
+
+    ranges = [(s, min(s + chunk_size, n_pairs))
+              for s in range(0, n_pairs, chunk_size)]
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(worker, s, e) for s, e in ranges]
+        for fut in futures:
+            fut.result()
+
+    q.put(None)
+    writer.join()
+
+    print(f"[Sanitizer] Chrome trace saved: {path}  "
+          f"({n_pairs} probe pairs x {n_threads} threads)")
+
+
 def sanitize(raw_csv: str, loc_map_path: str, output_path: str,
+             trace_path: str = None,
              dead: bool = True, merge: bool = True):
     """
     Perform dead-probe elimination and/or merge on raw CSV data.
@@ -61,6 +156,7 @@ def sanitize(raw_csv: str, loc_map_path: str, output_path: str,
         raw_csv:      Path to raw.csv (probes x threads*4)
         loc_map_path: Path to loc_map.json
         output_path:  Path to write active_probes.json
+        trace_path:   Path to write sanitized Chrome trace JSON (optional)
         dead:         Enable dead-probe elimination
         merge:        Enable adjacent-probe merging
     """
@@ -101,6 +197,10 @@ def sanitize(raw_csv: str, loc_map_path: str, output_path: str,
     print(f"[Sanitizer] Active probes saved: {output_path}  "
           f"({len(active_start)} start / {len(active_end)} end)")
 
+    # Export sanitized Chrome trace
+    if trace_path:
+        export_chrome_trace(trace_path, data, active_start, active_end, loc_map)
+
 
 def main():
     """Run sanitizer using settings from config.ini."""
@@ -115,10 +215,14 @@ def main():
     loc_map_path = os.path.join(output_dir, out_sec.get('loc_map', 'loc_map.json'))
     active_list = os.path.join(output_dir, san_sec.get('active_list', 'active_probes.json'))
 
+    trace_name = san_sec.get('sanitized_trace', 'sanitized_trace.json')
+    trace_path = os.path.join(output_dir, trace_name) if trace_name else None
+
     dead = san_sec.getboolean('dead', True)
     merge = san_sec.getboolean('merge', True)
 
-    sanitize(raw_csv, loc_map_path, active_list, dead=dead, merge=merge)
+    sanitize(raw_csv, loc_map_path, active_list, trace_path=trace_path,
+             dead=dead, merge=merge)
 
 
 if __name__ == '__main__':
