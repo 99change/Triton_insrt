@@ -8,34 +8,29 @@
 
 ```
 Triton_insrt/
-├── tri_ins/                   # 核心库
+├── tri_ins/                   # 核心组件
 │   ├── __init__.py            # 对外暴露 TritonInstrument
 │   ├── ptx_parser.py          # PTX 解析器：把 PTX 切分成 sub_block
-│   └── triton_instrument.py   # 插桩引擎 + 结果收集
-│
-├── Exist_Package/             # PTX 探针模板（来自 cuTile）
-│   ├── head.ptx               # 寄存器声明 / 初始化代码段
-│   ├── entry.ptx              # 探针入口模板（START：记录起始时间戳，INDEX 编码在 clock_hi 高 16 位）
-│   ├── exit.ptx               # 探针出口模板（END：记录结束时间戳并写入 time_buffer）
-│   ├── config.ptx             # 探针配置（线程过滤等）
-│   ├── insert_ptx.py          # cuTile 原始插桩脚本（参考实现）
-│   ├── sub_block.py           # cuTile 原始 parser（参考实现）
-│   └── ptxas                  # 备用 ptxas 可执行文件
+│   ├── config.ini             # 插桩配置脚本
+│   ├── triton_instrument.py   # 插桩引擎 + 结果收集
+│   ├── sanitizer.py           # 清理与融合插桩
+│   └── probe
+│       ├── head.ptx           # 寄存器声明 / 初始化代码段
+│       ├── entry.ptx          # 探针入口模板（START：记录起始时间戳，INDEX 编码在 clock_hi 高 16 位）
+│       └── exit.ptx           # 探针出口模板（END：记录结束时间戳并写入 profile_buffer）
 │
 ├── examples/
 │   └── test_instrument.py     # 端到端示例：matmul kernel 完整插桩流程
 │
-├── new_examples/              # 开发参考
-│   ├── sub_block.py           # ptx_parser.py 的对照实现
-│   ├── insert_ptx.py          # triton_instrument.py 的对照实现
-│   ├── config.ini             # 配置文件示例
-│   └── matmul.ptx             # cuTile 生成的参考插桩 PTX（用于验证）
+├── analysis/                  # 运行过程中分析插桩数据生成的配置文件
+│   ├── active_probes.json     # 活跃的插桩列表
+│   └── loc_map.json           # 插桩序号与源代码行号的映射
 │
 └── output/                    # 运行时自动生成
     ├── original.ptx           # Triton 编译出的原始 PTX（插桩前）
     ├── instrumented.ptx       # 插桩后的 PTX
     ├── raw.csv                # 原始时间戳数据（每线程每探针）
-    └── duration.csv           # 每探针耗时统计（ns）
+    └── trace.json             # Chrome trace 格式的可视化探针数据
 ```
 
 ---
