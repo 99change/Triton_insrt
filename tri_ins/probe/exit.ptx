@@ -1,0 +1,15 @@
+// ---- Timer Stop No. NO ----
+    // Timer stop
+    mov.u32 %end_lo, %clock;
+    mov.u32 %end_hi, %clock_hi;
+
+    // Add index information
+    and.b32 %end_hi, %end_hi, 65535;
+    or.b32 %end_hi, %end_hi, INDEX;
+
+    // Store data
+    @%is_probed_thread st.global.v4.u32 [%time_store_base], {%start_lo, %start_hi, %end_lo, %end_hi};
+
+    // Store address self increment
+    add.u64 %time_store_base, %time_store_base, %time_store_increment;
+// ---- Timer Stop No. NO ----

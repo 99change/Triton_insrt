@@ -1,23 +1,6 @@
-"""
-PTX Sub-Block Parser
-====================
-Based on new_examples/sub_block.py.
-
-Each sub_block tracks:
-  - entry / exit : 1-based line numbers in the PTX file
-  - file         : source file index from the ".loc <file> <line> <col>" directive
-  - loc          : source line number from the same directive
-  - mma_lines    : lines containing mma instructions (1-based)
-  - empty_lines  : blank / comment lines (1-based)
-  - is_start     : the opening "{" of the kernel body
-  - is_end       : the "ret;" instruction
-  - is_sync      : contains a barrier instruction
-"""
-
 import re
 from typing import List, Optional
 
-# ---- Regex patterns ----
 START   = re.compile(r'^{$')
 END     = re.compile(r'^\s*ret;')
 LABEL   = re.compile(r'^\s*\$L__BB\d+_(\d+):')
@@ -27,17 +10,15 @@ LOC     = re.compile(r'^\s*\.loc\s+(\d+)\s+(\d+)\s+(\d+)')
 COMMENT = re.compile(r'^\s*//')
 MMA     = re.compile(r'^\s*mma')
 EMPTY   = re.compile(r'^\s*$')
-# Only mbarrier.try_wait.parity.acquire (cuTile) triggers sync-pairing logic.
-# bar.sync (Triton) is treated as a plain instruction, matching sub_block.py.
 SYNC    = re.compile(r'^\s*mbarrier\.try_wait\.parity\.acquire')
 
 
 class sub_block:
     def __init__(self, entry: int, file: int, loc: int):
-        self.entry: int = entry      # 1-based line number of first instruction
-        self.exit:  int = 0          # 1-based line number of last instruction
-        self.file:  int = file       # source file index (from .loc directive)
-        self.loc:   int = loc        # source line number (from .loc directive)
+        self.entry: int = entry
+        self.exit:  int = 0
+        self.file:  int = file
+        self.loc:   int = loc
         self.mma_lines:   List[int] = []
         self.empty_lines: List[int] = []
         self.is_start: bool = False
@@ -64,19 +45,6 @@ class sub_block:
 
 
 def builder(lines: List[str]) -> List['sub_block']:
-    """
-    Parse PTX lines into sub-blocks.
-
-    The .loc directive format is:  .loc <file_index> <line> <col>
-    file_index identifies which Python source file the following instructions
-    came from — Triton-compiled PTX can reference more than one source file.
-
-    Args:
-        lines: PTX lines (with or without trailing newline)
-
-    Returns:
-        List of sub_block objects in source order.
-    """
     sub_block_list: List[sub_block] = []
     current_sub_block: Optional[sub_block] = None
     current_loc:  int = -1
@@ -103,7 +71,6 @@ def builder(lines: List[str]) -> List['sub_block']:
             current_sub_block.is_start = True
 
         elif current_sub_block is None:
-            # haven't entered the kernel body yet
             pass
 
         elif loc_match:
@@ -130,11 +97,9 @@ def builder(lines: List[str]) -> List['sub_block']:
             boundary_block = sub_block(ptx_line_num, current_file, current_loc)
             boundary_block.exit = ptx_line_num
             sub_block_list.append(boundary_block)
-            # start a new block after this boundary line unless next line is .loc
             if i + 1 < len(lines) and not re.match(LOC, lines[i + 1].rstrip()):
                 current_sub_block = sub_block(ptx_line_num + 1, current_file, current_loc)
             else:
-                # .loc handler on next iteration will create the new block
                 current_sub_block = boundary_block
 
         elif end_match:
@@ -144,11 +109,3 @@ def builder(lines: List[str]) -> List['sub_block']:
             return sub_block_list
 
         i += 1
-
-    # safety: return whatever was collected if ret; was never seen
-    if current_sub_block is not None and current_sub_block not in sub_block_list:
-        current_sub_block.exit = len(lines)
-        current_sub_block.is_end = True
-        sub_block_list.append(current_sub_block)
-
-    return sub_block_list

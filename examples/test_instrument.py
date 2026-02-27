@@ -1,40 +1,26 @@
-"""
-End-to-end test: Triton matmul with PTX instrumentation
-=========================================================
-1. Defines a matmul kernel with an extra `buffer_ptr` parameter
-2. Uses TritonInstrument to intercept PTX and insert timing probes
-3. Runs the kernel, collects timing data, and prints results
-"""
-
 import os
 import sys
 import torch
 import triton
 import triton.language as tl
 
-# Add project root so `tri_ins` is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from tri_ins import TritonInstrument
 
 
 @triton.jit
 def matmul_kernel(
-    # Original params
     a_ptr, b_ptr, c_ptr,
     M, N, K,
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    # === Instrumentation buffers (last two non-constexpr params) ===
     time_buffer_ptr,
-    idx_buffer_ptr,
-    # Constexpr params (not in PTX)
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
-    """Matmul kernel with buffer_ptr for instrumentation."""
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -79,10 +65,7 @@ def main():
     c = torch.empty((M, N), device="cuda", dtype=torch.float16)
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),)
-    # grid = (4*2,) = (8,) blocks, each with 128 threads
-    # Total threads = 8 * 128 = 1024, global thread IDs [0, 1023]
 
-    # Ground truth from PyTorch
     torch_ref = torch.matmul(a, b)
 
     print("=" * 70)
@@ -94,13 +77,12 @@ def main():
 
     output_dir = os.path.abspath(inst.output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    # Update output_dir to absolute path so PTX saves go to the right place
     inst.output_dir = output_dir
 
     n_threads = inst.t_end - inst.t_start + 1
 
     with inst:
-        time_buf, idx_buf = inst.allocate_buffer(
+        time_buf = inst.allocate_buffer(
             n_probes_estimate=inst.n_probes_estimate, n_threads=n_threads)
 
         # Launch instrumented kernel
@@ -111,25 +93,19 @@ def main():
             a.stride(0), a.stride(1),
             b.stride(0), b.stride(1),
             c_inst.stride(0), c_inst.stride(1),
-            time_buf,  # ← timing buffer (int64)
-            idx_buf,   # ← index buffer (int16)
+            time_buf,
             BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_N=BLOCK_N,
             BLOCK_SIZE_K=BLOCK_K, GROUP_SIZE_M=8,
         )
         torch.cuda.synchronize()
 
-        # Check correctness against torch.matmul
         max_diff = (c_inst.float() - torch_ref.float()).abs().max().item()
         print(f"\nInstrumented vs torch.matmul max diff: {max_diff:.6f}")
 
-        # Print timing results
-        results = inst.get_results()
+        raw_base = os.path.splitext(os.path.join(output_dir, inst.raw_csv))[0]
+        results = inst.get_results(export_path=raw_base)
         inst.print_summary(results)
 
-        # Export CSV results
-        inst.export_csv_raw(os.path.join(output_dir, inst.raw_csv), results)
-
-        # Export Chrome trace JSON
         inst.export_chrome_trace(os.path.join(output_dir, inst.trace_json), results)
 
 
