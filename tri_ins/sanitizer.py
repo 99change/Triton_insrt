@@ -5,7 +5,8 @@ Usage:
     python -m tri_ins.sanitizer
 
 Reads config from tri_ins/config.ini, loads raw CSV and loc_map.json,
-performs dead elimination and/or merge, outputs active_probes.json.
+performs dead elimination and/or merge, outputs active_probes.json
+and sanitized Chrome trace JSON.
 """
 
 import os
@@ -21,16 +22,16 @@ from concurrent.futures import ThreadPoolExecutor
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 
 
-def clear_dead(data: np.ndarray) -> Tuple[List[int], List[int]]:
+def clear_dead(data: np.ndarray) -> List[List[int]]:
     """Find probes that were actually executed (non-dead)."""
     start_idx = data[:, ::4]
     end_idx = data[:, 1::4]
-    active_start = sorted(set(np.unique(start_idx).tolist()))
-    active_end = sorted(set(np.unique(end_idx).tolist()))
-    return active_start, active_end
+    active_start = np.unique(start_idx).tolist()
+    active_end = np.unique(end_idx).tolist()
+    return [active_start, active_end]
 
 
-def get_connections(data: np.ndarray) -> Set[Tuple[int, int]]:
+def _get_connections(data: np.ndarray) -> Set[Tuple[int, int]]:
     """Find (end_idx -> next start_idx) transitions across consecutive probes."""
     start_index = data[:, ::4]
     end_index = data[:, 1::4]
@@ -40,24 +41,40 @@ def get_connections(data: np.ndarray) -> Set[Tuple[int, int]]:
     return set(zip(from_nodes.tolist(), to_nodes.tolist()))
 
 
-def get_merge_list(connections: Set[Tuple[int, int]],
-                   loc_map: Dict[int, int]) -> List[Tuple[int, int]]:
+def _get_merge_list(connections: Set[Tuple[int, int]],
+                    loc_map: Dict[str, int]) -> List[Tuple[int, int]]:
     """Find probe pairs that can be merged (unique 1:1 connection, same loc)."""
     merged = []
-    for from_idx, to_idx in connections:
-        is_unique_from = sum(1 for c in connections if c[0] == from_idx) == 1
-        is_unique_to = sum(1 for c in connections if c[1] == to_idx) == 1
+    for connection in connections:
+        from_index = connection[0]
+        to_index = connection[1]
+        is_unique_from = sum(1 for c in connections if c[0] == from_index) == 1
+        is_unique_to = sum(1 for c in connections if c[1] == to_index) == 1
         if is_unique_from and is_unique_to:
-            from_loc = loc_map.get(from_idx, loc_map.get(str(from_idx), None))
-            to_loc = loc_map.get(to_idx, loc_map.get(str(to_idx), None))
-            if from_loc is not None and from_loc == to_loc:
-                merged.append((from_idx, to_idx))
+            from_loc = loc_map.get(str(from_index), None)
+            to_loc = loc_map.get(str(to_index), None)
+            if from_loc == to_loc:
+                merged.append(connection)
     return merged
+
+
+def merge(active_start: List[int], active_end: List[int],
+          data: np.ndarray, loc_map: Dict[str, int]) -> List[List[int]]:
+    """Merge adjacent 1:1-connected probes on the same source line."""
+    connections = _get_connections(data=data)
+    merge_list = _get_merge_list(connections=connections, loc_map=loc_map)
+
+    eliminated_start = {c[1] for c in merge_list}
+    eliminated_end = {c[0] for c in merge_list}
+    active_start = [x for x in active_start if x not in eliminated_start]
+    active_end = [x for x in active_end if x not in eliminated_end]
+
+    return [active_start, active_end]
 
 
 def export_chrome_trace(path: str, data: np.ndarray,
                         active_start: List[int], active_end: List[int],
-                        loc_map: Dict[int, int],
+                        loc_map: Dict[str, int],
                         chunk_size: int = 4096, workers: int = 16,
                         queue_size: int = 16):
     """
@@ -94,7 +111,7 @@ def export_chrome_trace(path: str, data: np.ndarray,
                     continue
 
                 duration = end_time - start_time
-                loc = loc_map.get(start_idx, None)
+                loc = loc_map.get(str(start_idx), None)
                 name = f"Line {loc}" if loc is not None else f"Probe {start_idx}"
 
                 event = {
@@ -148,7 +165,7 @@ def export_chrome_trace(path: str, data: np.ndarray,
 
 def sanitize(raw_csv: str, loc_map_path: str, output_path: str,
              trace_path: str = None,
-             dead: bool = True, merge: bool = True):
+             dead: bool = True, need_merge: bool = True):
     """
     Perform dead-probe elimination and/or merge on raw CSV data.
 
@@ -158,35 +175,33 @@ def sanitize(raw_csv: str, loc_map_path: str, output_path: str,
         output_path:  Path to write active_probes.json
         trace_path:   Path to write sanitized Chrome trace JSON (optional)
         dead:         Enable dead-probe elimination
-        merge:        Enable adjacent-probe merging
+        need_merge:   Enable adjacent-probe merging
     """
     # Load raw CSV (skip header row)
     data = np.loadtxt(raw_csv, delimiter=',', dtype=np.int64, skiprows=1)
 
     with open(loc_map_path, 'r', encoding='utf-8') as f:
         loc_map = json.load(f)
-    # Convert string keys to int
-    loc_map = {int(k): v for k, v in loc_map.items()}
+    # Keep loc_map keys as strings (matching original design)
 
-    n_probes = data.shape[0]
-    active_start = list(range(n_probes))
-    active_end = list(range(n_probes))
+    active_start = list(range(len(loc_map)))
+    active_end = list(range(len(loc_map)))
 
     if dead:
-        active_start, active_end = clear_dead(data)
-        n_dead_start = n_probes - len(active_start)
-        n_dead_end = n_probes - len(active_end)
+        active_start, active_end = clear_dead(data=data)
+        n_dead_start = len(loc_map) - len(active_start)
+        n_dead_end = len(loc_map) - len(active_end)
         print(f"[Sanitizer] Dead elimination: removed {n_dead_start} start / "
               f"{n_dead_end} end probes")
 
-    if merge:
-        connections = get_connections(data)
-        merge_list = get_merge_list(connections, loc_map)
-        eliminated_start = {c[1] for c in merge_list}
-        eliminated_end = {c[0] for c in merge_list}
-        active_start = [x for x in active_start if x not in eliminated_start]
-        active_end = [x for x in active_end if x not in eliminated_end]
-        print(f"[Sanitizer] Merge: {len(merge_list)} probe pairs merged")
+    if need_merge:
+        active_start, active_end = merge(
+            active_start=active_start,
+            active_end=active_end,
+            data=data,
+            loc_map=loc_map
+        )
+        print(f"[Sanitizer] Merge complete")
 
     json_data = {
         'active_start': {'list': active_start},
@@ -219,10 +234,10 @@ def main():
     trace_path = os.path.join(output_dir, trace_name) if trace_name else None
 
     dead = san_sec.getboolean('dead', True)
-    merge = san_sec.getboolean('merge', True)
+    need_merge = san_sec.getboolean('merge', True)
 
     sanitize(raw_csv, loc_map_path, active_list, trace_path=trace_path,
-             dead=dead, merge=merge)
+             dead=dead, need_merge=need_merge)
 
 
 if __name__ == '__main__':

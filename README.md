@@ -8,34 +8,32 @@
 
 ```
 Triton_insrt/
-├── tri_ins/                   # 核心库
-│   ├── __init__.py            # 对外暴露 TritonInstrument
-│   ├── ptx_parser.py          # PTX 解析器：把 PTX 切分成 sub_block
-│   └── triton_instrument.py   # 插桩引擎 + 结果收集
+├── tri_ins/                      # 核心库
+│   ├── __init__.py               # 对外暴露 TritonInstrument, sanitizer
+│   ├── config.ini                # 默认配置文件
+│   ├── ptx_parser.py             # PTX 解析器：把 PTX 切分成 sub_block
+│   ├── triton_instrument.py      # 插桩引擎 + 结果收集 + 导出
+│   └── sanitizer.py              # Dead elimination + merge + 导出 sanitized trace
 │
-├── Exist_Package/             # PTX 探针模板（来自 cuTile）
-│   ├── head.ptx               # 寄存器声明 / 初始化代码段
-│   ├── entry.ptx              # 探针入口模板（START：记录进入时间戳）
-│   ├── exit.ptx               # 探针出口模板（END：记录离开时间戳）
-│   ├── config.ptx             # 探针配置（线程过滤等）
-│   ├── insert_ptx.py          # cuTile 原始插桩脚本（参考实现）
-│   ├── sub_block.py           # cuTile 原始 parser（参考实现）
-│   └── ptxas                  # 备用 ptxas 可执行文件
+├── template/                     # PTX 探针模板（来自 cuTile）
+│   ├── head.ptx                  # 寄存器声明 / 初始化代码段
+│   ├── entry.ptx                 # 探针入口模板（START：记录进入时间戳）
+│   ├── exit.ptx                  # 探针出口模板（END：记录离开时间戳）
+│   └── config.ptx                # 探针配置（线程 ID 计算、buffer 基址加载）
 │
 ├── examples/
-│   └── test_instrument.py     # 端到端示例：matmul kernel 完整插桩流程
+│   ├── test_instrument.py        # 端到端示例：matmul kernel 完整插桩流程
+│   ├── matmul.py                 # 独立 matmul 性能测试脚本
+│   └── dump_ptx.py               # 仅导出原始 PTX，不插桩
 │
-├── new_examples/              # 开发参考
-│   ├── sub_block.py           # ptx_parser.py 的对照实现
-│   ├── insert_ptx.py          # triton_instrument.py 的对照实现
-│   ├── config.ini             # 配置文件示例
-│   └── matmul.ptx             # cuTile 生成的参考插桩 PTX（用于验证）
-│
-└── output/                    # 运行时自动生成
-    ├── original.ptx           # Triton 编译出的原始 PTX（插桩前）
-    ├── instrumented.ptx       # 插桩后的 PTX
-    ├── raw.csv                # 原始时间戳数据（每线程每探针）
-    └── duration.csv           # 每探针耗时统计（ns）
+└── output/                       # 运行时自动生成
+    ├── original.ptx              # Triton 编译出的原始 PTX（插桩前）
+    ├── instrumented.ptx          # 插桩后的 PTX
+    ├── raw.csv                   # 原始时间戳数据（每线程每探针）
+    ├── loc_map.json              # probe_id → 源码行号映射
+    ├── trace.json                # 完整 Chrome Trace（所有探针，Perfetto 可读）
+    ├── active_probes.json        # sanitizer 输出：活跃探针列表
+    └── sanitized_trace.json      # sanitizer 输出：精简后的 Chrome Trace
 ```
 
 ---
@@ -126,14 +124,18 @@ def my_kernel(
 ```python
 from tri_ins import TritonInstrument
 
-with TritonInstrument(mode="block", t_start=0, t_end=127, output_dir="output") as inst:
-    time_buf, idx_buf = inst.allocate_buffer(n_probes_estimate=128, n_threads=128)
+# 从 tri_ins/config.ini 读取所有配置
+inst = TritonInstrument.from_config()
+
+with inst:
+    time_buf, idx_buf = inst.allocate_buffer()
     my_kernel[grid](..., time_buf, idx_buf, BLOCK=128)
     torch.cuda.synchronize()
-    results = inst.get_results()
-    inst.print_summary(results)
-    inst.export_csv_raw("output/raw.csv", results)
-    inst.export_csv_duration("output/duration.csv", results)
+
+results = inst.get_results()
+inst.print_summary(results)
+inst.export_csv_raw("output/raw.csv", results)
+inst.export_chrome_trace("output/trace.json", results)
 ```
 
 完整可运行示例见 `examples/test_instrument.py`，直接执行即可：
@@ -149,7 +151,16 @@ python examples/test_instrument.py
 | `output/original.ptx` | 插桩前的原始 Triton PTX |
 | `output/instrumented.ptx` | 插桩后的 PTX，可用于人工核查探针位置 |
 | `output/raw.csv` | 每个线程在每个探针处的原始 `clock64` 时间戳 |
-| `output/duration.csv` | 每个探针的 START→END 耗时（纳秒），按 thread 列出 |
+| `output/loc_map.json` | probe_id → Python 源码行号的映射 |
+| `output/trace.json` | 完整 Chrome Trace，可在 [Perfetto](https://ui.perfetto.dev) 中可视化 |
+| `output/active_probes.json` | sanitizer 输出：dead elimination + merge 后的活跃探针列表 |
+| `output/sanitized_trace.json` | sanitizer 输出：仅保留活跃探针的精简 Chrome Trace |
+
+运行 sanitizer（需先跑过一次 `test_instrument.py`）：
+
+```bash
+python -m tri_ins.sanitizer
+```
 
 ---
 
