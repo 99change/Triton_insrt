@@ -1,0 +1,11 @@
+// ---- Timer Start No. NO ----
+    // Timer start
+    mov.u32 %start_hi, %clock_hi;
+
+    // Add index information
+    and.b32 %start_hi, %start_hi, 65535;
+    or.b32 %start_hi, %start_hi, INDEX;
+
+    // Timer start
+    mov.u32 %start_lo, %clock;
+// ---- Timer Start No. NO ----

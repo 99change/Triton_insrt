@@ -1,4 +1,8 @@
 analysis/
-tri_ins/__pycache__/
+ominiscope/python/__pycache__
+ominiscope/analysis/__pycache__
+ominiscope/output
+examples/__pycache__
 output/
+analysis/
 .vscode/
